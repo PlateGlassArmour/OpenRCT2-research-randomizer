@@ -2,15 +2,6 @@
    Research Randomizer (ES5)
    ========================= */
 
-/*
- * Human-readable refactor notes:
- * - Preserved behavior, API usage, and plugin metadata.
- * - Added clear, single-line purpose comments above every function.
- * - Kept ES5 syntax (no =>, let/const, classes, etc.).
- * - Variable names inside functions use clearer naming where safe.
- * - Do NOT change the plugin info block at the bottom.
- */
-
 // Namespace used as a prefix for sharedStorage keys
 var NS_RR = "PlateGlassArmour.ResearchRandomizer"
 
