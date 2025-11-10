@@ -16,6 +16,18 @@ Anything already built in the park will be guaranteed to stay researched, but ev
 
 Feel free to hit the button multiple times if you're unhappy with the first spin of the wheel.
 
+## Changelog
+
+V1.0
+
+- initial commit
+
+V2.0
+
+- added the ability to filter out Custom items (since there are a lot of decorative rides and such)
+- massive overhaul to basically the whole plugin under-the-hood, but feature set is still basically unchanged
+- still have persistent issues filtering out extraneous ride variants when using research multiplier
+
 ## 📜 License
 
 This project is licensed under the MIT License.
