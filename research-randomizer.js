@@ -1,3175 +1,4122 @@
-/* ==========================================================================
-   MODULE: RR.constants  |  Category lists, fixed/default IDs, special IDs, tiny helpers
-   PURPOSE: Central place for shared constants and very small helpers used across modules.
-   ========================================================================== */
-
-var RR = typeof RR !== "undefined" ? RR : {}
-
-var RR_CATEGORIES = [
- "transport",
- "gentle",
- "rollercoaster",
- "thrill",
- "water",
- "shop",
- "scenery", // scenery groups only; individual items aren’t researchable
-]
-
-var RR_DEFAULT_FIXED_IDS = [
- "rct2.scenery_group.scgwalls",
- "rct2.scenery_group.scgpathx",
- "rct2.scenery_group.scgshrub",
- "rct2.scenery_group.scggardn",
- "rct2.scenery_group.scgfence",
- "rct2.scenery_group.scgtrees",
- "rct1.ride.toilets",
-]
-
-var RR_DEFAULT_FIXED_LOOKUP = (function () {
- var m = {}
- var i
- for (i = 0; i < RR_DEFAULT_FIXED_IDS.length; i++) {
-  m[RR_DEFAULT_FIXED_IDS[i]] = true
- }
- return m
-})()
-
-var RR_SPECIAL_IDS = {
- CASH_MACHINE: "rct2.ride.atm1",
- INFO_KIOSK: "rct2.ride.infok",
-}
-
-var RR_SPECIAL_LOOKUP = (function () {
- var m = {}
- m[RR_SPECIAL_IDS.CASH_MACHINE] = true
- m[RR_SPECIAL_IDS.INFO_KIOSK] = true
- return m
-})()
-
-/* --- Source whitelist (ObjectSourceGame tokens from the API) --- */
-var RR_ALLOWED_SOURCE_GAMES = ["rct1", "added_attractions", "loopy_landscapes", "rct2", "wacky_worlds", "time_twister", "openrct2_official"]
-
-/* tiny helpers */
-function rr_isKnownCategory(name) {
- var i
- for (i = 0; i < RR_CATEGORIES.length; i++) {
-  if (RR_CATEGORIES[i] === name) {
-   return true
-  }
- }
- return false
-}
-function rr_isDefaultFixedId(identifier) {
- return !!RR_DEFAULT_FIXED_LOOKUP[identifier]
-}
-function rr_isSpecialId(identifier) {
- return !!RR_SPECIAL_LOOKUP[identifier]
-}
-function rr_whichSpecial(identifier) {
- if (identifier === RR_SPECIAL_IDS.CASH_MACHINE) {
-  return "CASH_MACHINE"
- }
- if (identifier === RR_SPECIAL_IDS.INFO_KIOSK) {
-  return "INFO_KIOSK"
- }
- return null
-}
-
-/* Robustly extract source game tokens from various shapes */
-function rr__extractSourceTokens(any) {
- try {
-  // Preferred: array of tokens
-  if (any && any.sourceGames && typeof any.sourceGames.length === "number") {
-   return any.sourceGames.slice(0)
-  }
- } catch (e1) {}
- try {
-  // Nested under installedObject
-  if (any && any.installedObject && any.installedObject.sourceGames && typeof any.installedObject.sourceGames.length === "number") {
-   return any.installedObject.sourceGames.slice(0)
-  }
- } catch (e2) {}
- try {
-  // Singular token
-  if (any && typeof any.sourceGame === "string") {
-   return [any.sourceGame]
-  }
- } catch (e3) {}
- try {
-  // Singular token nested
-  if (any && any.installedObject && typeof any.installedObject.sourceGame === "string") {
-   return [any.installedObject.sourceGame]
-  }
- } catch (e4) {}
- return []
-}
-
-/* Returns true iff EVERY listed source is whitelisted (and at least one exists). */
-function rr_isWhitelistedSource(installedObject) {
- try {
-  var sg = rr__extractSourceTokens(installedObject)
-  if (!sg || !sg.length) return false
-  var i
-  for (i = 0; i < sg.length; i++) {
-   var token = String(sg[i])
-   var ok = false
-   var j
-   for (j = 0; j < RR_ALLOWED_SOURCE_GAMES.length; j++) {
-    if (RR_ALLOWED_SOURCE_GAMES[j] === token) {
-     ok = true
-     break
-    }
-   }
-   if (!ok) return false
-  }
-  return true
- } catch (e) {
-  return false
- }
-}
-
-function rr_hasCustomSource(installedObject) {
- return !rr_isWhitelistedSource(installedObject)
-}
-
-function rr_getCategoryListCopy() {
- var copy = []
- var i
- for (i = 0; i < RR_CATEGORIES.length; i++) {
-  copy.push(RR_CATEGORIES[i])
- }
- return copy
-}
-
-/* expose as RR.constants */
-RR.constants = {
- CATEGORIES: RR_CATEGORIES,
- DEFAULT_FIXED_IDS: RR_DEFAULT_FIXED_IDS,
- SPECIAL_IDS: RR_SPECIAL_IDS,
- ALLOWED_SOURCE_GAMES: RR_ALLOWED_SOURCE_GAMES,
-
- isKnownCategory: rr_isKnownCategory,
- isDefaultFixedId: rr_isDefaultFixedId,
- isSpecialId: rr_isSpecialId,
- whichSpecial: rr_whichSpecial,
-
- /* Source helpers (whitelist semantics) */
- isWhitelistedSource: rr_isWhitelistedSource,
- hasCustomSource: rr_hasCustomSource,
-
- getCategoryListCopy: rr_getCategoryListCopy,
-}
-/* =========================== END MODULE: RR.constants =========================== */
-
-/* ==========================================================================
-   MODULE: RR.state  |  Persistent storage (prefs, catalog, baseline, meta, bad ride types)
-   PURPOSE: Wraps context.sharedStorage with stable keys + a light migration shim.
-   ========================================================================== */
-
-var RR = typeof RR !== "undefined" ? RR : {}
-
-/* Storage namespace*/
-var RR_STATE_NS = "PlateGlassArmour.ResearchRandomizer"
-
-/* --- small helpers --- */
-function rr_stateKey(suffix) {
- return RR_STATE_NS + suffix
-}
-function rr_ssGet(key, fallback) {
- try {
-  var v = context && context.sharedStorage && context.sharedStorage.get ? context.sharedStorage.get(key) : undefined
-  return typeof v === "undefined" ? fallback : v
- } catch (e) {
-  return fallback
- }
-}
-function rr_ssSet(key, value) {
- try {
-  if (context && context.sharedStorage && context.sharedStorage.set) {
-   context.sharedStorage.set(key, value)
-  }
- } catch (e) {}
-}
-
-/* --- multipliers used by UI (mirror RR.ui) --- */
-var RR_STATE_MULTS = [1.0, 1.5, 2.0, 3.0]
-function rr_idxForMult(m) {
- var i
- for (i = 0; i < RR_STATE_MULTS.length; i++) {
-  if (RR_STATE_MULTS[i] === m) return i
- }
- return 0
-}
-function rr_multForIdx(i) {
- if (typeof i !== "number" || i < 0 || i >= RR_STATE_MULTS.length) return 1.0
- return RR_STATE_MULTS[i]
-}
-
-/* --- prefs: read legacy (.prefs) and write both (.prefs2 + legacy) --- */
-function rr_readPrefs() {
- var p2 = rr_ssGet(rr_stateKey(".prefs2"), null)
- if (p2 && typeof p2 === "object" && typeof p2.multiplier === "number") {
-  return {
-   multiplier: p2.multiplier,
-   guaranteeATM: !!p2.guaranteeATM,
-   guaranteeInfo: !!p2.guaranteeInfo,
-   excludeCustom: !!p2.excludeCustom,
-  }
- }
-
- // Legacy shape from original file: { schema:1, multIdx:number, cash:boolean, info:boolean }
- var legacy = rr_ssGet(rr_stateKey(".prefs"), null)
- var multIdx = legacy && typeof legacy.multIdx === "number" ? legacy.multIdx : 0
- return {
-  multiplier: rr_multForIdx(multIdx),
-  guaranteeATM: !!(legacy && legacy.cash),
-  guaranteeInfo: !!(legacy && legacy.info),
-  excludeCustom: false, // new flag defaults to false
- }
-}
-function rr_writePrefs(prefs) {
- var mult = typeof prefs.multiplier === "number" ? prefs.multiplier : 1.0
- var out2 = {
-  version: 2,
-  multiplier: mult,
-  guaranteeATM: !!prefs.guaranteeATM,
-  guaranteeInfo: !!prefs.guaranteeInfo,
-  excludeCustom: !!prefs.excludeCustom,
- }
- rr_ssSet(rr_stateKey(".prefs2"), out2)
-
- // Also store legacy shape so older code / debug still sees consistent state
- var legacy = {
-  schema: 1,
-  multIdx: rr_idxForMult(mult),
-  cash: !!out2.guaranteeATM,
-  info: !!out2.guaranteeInfo,
- }
- rr_ssSet(rr_stateKey(".prefs"), legacy)
-}
-
-/* --- catalog + meta (timestamps, counters, etc.) --- */
-function rr_getCatalog() {
- return rr_ssGet(rr_stateKey(".catalogV2"), {})
-}
-function rr_saveCatalog(cat) {
- rr_ssSet(rr_stateKey(".catalogV2"), cat || {})
- var meta = rr_getMeta()
- meta.lastScanUtc = Date.now()
- rr_setMeta(meta)
-}
-function rr_getMeta() {
- return rr_ssGet(rr_stateKey(".meta"), {})
-}
-function rr_setMeta(m) {
- rr_ssSet(rr_stateKey(".meta"), m || {})
-}
-/* For UI status line: { createdAt: meta.lastScanUtc || null } */
-function rr_getCatalogMeta() {
- var m = rr_getMeta()
- return { createdAt: m && m.lastScanUtc ? m.lastScanUtc : null }
-}
-
-/* --- level scoping (same as original’s levelKey) --- */
-function rr_levelKey() {
- var name = ""
- try {
-  name = park && park.name ? park.name : ""
- } catch (e) {}
- var sx = 0,
-  sy = 0
- try {
-  sx = map && map.size && map.size.x ? map.size.x : 0
-  sy = map && map.size && map.size.y ? map.size.y : 0
- } catch (e2) {}
- return name + "|" + sx + "x" + sy
-}
-
-/* --- baseline (per level) --- */
-function rr_getBaseline() {
- var base = rr_ssGet(rr_stateKey(".baseline." + rr_levelKey()), null)
- // UI expects .createdAt; legacy stored .capturedUtc
- if (base && typeof base.createdAt === "undefined" && typeof base.capturedUtc === "number") {
-  base.createdAt = base.capturedUtc
- }
- return base
-}
-function rr_saveBaseline(baseline) {
- rr_ssSet(rr_stateKey(".baseline." + rr_levelKey()), baseline || null)
-}
-
-/* --- bad ride types --- */
-function rr_getBadRideTypes() {
- return rr_ssGet(rr_stateKey(".badRideTypes"), {})
-}
-function rr_saveBadRideTypes(map) {
- rr_ssSet(rr_stateKey(".badRideTypes"), map || {})
-}
-
-/* --- maintenance helpers --- */
-function rr_clearAll() {
- rr_ssSet(rr_stateKey(".catalogV2"), {})
- rr_ssSet(rr_stateKey(".meta"), {})
- rr_ssSet(rr_stateKey(".badRideTypes"), {})
- rr_ssSet(rr_stateKey(".baseline." + rr_levelKey()), null)
-}
-
-/* --- public API --- */
-RR.state = {
- init: function () {
-  // ensure prefs exist and are normalized
-  rr_writePrefs(rr_readPrefs())
+/** ==================================================
+ * Module: RR.config.core
+ * Purpose: Central constants, names, defaults, and keys (per bible).
+ * Exports: RR.config
+ * Imports: None
+ * Version: 3.0.0-alpha.7   Since: 2025-11-15
+ * =================================================== */
+var RR = RR || {}
+RR.config = {
+ INTERNAL_NAME: "research-randomizer",
+ UI_NAME: "Research Randomizer",
+ VERSION: "3.0.0-alpha.7",
+ CLASS: "rrv3.main",
+ COLOURS: [24, 24, 24],
+ STORAGE: { SHARED_KEY: "rr.v3.options", PARK_KEY: "rr.v3.park" },
+ DEFAULTS: {
+  // user-facing options
+  excludeCustom: true,
+  // Legacy flag kept for migration; categoryMode is now authoritative.
+  preserveCategoryRatio: true,
+  // "preserve" | "even"
+  categoryMode: "preserve",
+  researchMultiplier: 1.0,
+  // Essential item modes: "ignore" | "researchable" | "start"
+  essentialInfoKioskMode: "researchable",
+  essentialCashMachineMode: "researchable",
+  essentialFirstAidMode: "researchable",
+  verboseLogging: false,
+  // dev
+  seed: 123456,
+  automaticallyRandomizeSeed: true,
+  disableWarning: false,
  },
-
- // prefs
- getPrefs: rr_readPrefs,
- savePrefs: rr_writePrefs,
-
- // catalog + meta
- getCatalog: rr_getCatalog,
- saveCatalog: rr_saveCatalog,
- getCatalogMeta: rr_getCatalogMeta,
- _getMeta: rr_getMeta, // (optional) for internal modules
- _setMeta: rr_setMeta, // (optional) for internal modules
-
- // baseline (per level)
- getBaseline: rr_getBaseline,
- saveBaseline: rr_saveBaseline,
- levelKey: rr_levelKey,
-
- // bad ride types
- getBadRideTypes: rr_getBadRideTypes,
- saveBadRideTypes: rr_saveBadRideTypes,
-
- // admin
- clearAll: rr_clearAll,
 }
-/* ============================== END MODULE: RR.state ============================== */
+/* ============= End of RR.config.core ============= */
 
-/* ==========================================================================
-MODULE: RR.gameBridge  |  Reads/writes park research and objects
-PURPOSE: Snapshot/apply research, resolve identifiers, load/unload objects,
-detect rides in use, and keep research lists consistent/sane.
-========================================================================== */
-
-var RR = typeof RR !== "undefined" ? RR : {}
-
-/* Constants & tiny helpers (local to this module) */
-var RRGB_API_SCENERY_GROUP = "scenery_group"
-var RRGB_FALLBACK_CATEGORIES = ["transport", "gentle", "rollercoaster", "thrill", "water", "shop", "scenery"]
-
-function rrgb_getCategories() {
- return RR.constants && RR.constants.CATEGORIES ? RR.constants.CATEGORIES : RRGB_FALLBACK_CATEGORIES
-}
-function rrgb_isKnownCategory(name) {
- if (RR.constants && RR.constants.isKnownCategory) {
-  return RR.constants.isKnownCategory(name)
+/** ==================================================
+ * Module: RR.helper.core
+ * Purpose: Shared helpers (asciiLower, essential mode, category, usage scan, id caches).
+ * Exports: RR.helper
+ * Imports: RR.config, RR.state, RR.category
+ * Version: 3.0.0-alpha.2   Since: 2025-11-15
+ * =================================================== */
+var RR = RR || {}
+RR.helper = (function () {
+ // -------- asciiLower --------
+ function asciiLower(s) {
+  s = String(s || "").toLowerCase()
+  var o = ""
+  for (var i = 0; i < s.length; i++) {
+   var c = s.charCodeAt(i)
+   o += c >= 32 && c <= 127 ? s.charAt(i) : "?"
+  }
+  return o
  }
- var cats = rrgb_getCategories()
- var i
- for (i = 0; i < cats.length; i++) {
-  if (cats[i] === name) return true
+
+ // -------- Essential mode lookup --------
+ var ESS_KEYS = {
+  info: "essentialInfoKioskMode",
+  cash: "essentialCashMachineMode",
+  firstAid: "essentialFirstAidMode",
  }
- return false
-}
-function rrgb_apiTypeFor(kind) {
- return kind === "scenery" ? RRGB_API_SCENERY_GROUP : kind
-}
-function rrgb_isValidRideType(rideType) {
- return typeof rideType === "number" && isFinite(rideType) && rideType >= 0 && rideType !== 255
-}
-function rrgb_stableKey(type, identifier, rideType) {
- if (type === "ride") {
-  return rrgb_isValidRideType(rideType) ? "ride|" + identifier + "|" + String(rideType) : "ride|" + identifier + "|bad"
+
+ // Return "ignore" | "researchable" | "start" for a given essential key.
+ function getEssentialModeForKey(key) {
+  var o = RR.state && RR.state.options
+  var def = "researchable"
+  if (!o) {
+   return def
+  }
+  var optKey = ESS_KEYS[key]
+  if (!optKey) {
+   return def
+  }
+  var val = o[optKey]
+  if (val === "ignore" || val === "researchable" || val === "start") {
+   return val
+  }
+  return def
  }
- return "scenery|" + identifier
-}
 
-/* ---------- Object resolution, load/unload ---------- */
+ // -------- Category-from-item helper --------
+ function categoryFromItem(it) {
+  if (!it) {
+   return "rollercoaster"
+  }
+  // Delegate to RR.category.fromItem; it already handles non-ride items safely.
+  return RR.category.fromItem(it)
+ }
 
-function rrgb_tryGetIdentifier(type, index) {
- var apiType = rrgb_apiTypeFor(type)
- try {
-  var o = context.getObject(apiType, index)
-  if (o && o.identifier) return o.identifier
- } catch (e) {}
- return null
-}
-
-function rrgb_resolveLoadedObject(type, identifier) {
- var apiType = rrgb_apiTypeFor(type)
- try {
-  var all = context.getAllObjects(apiType)
-  var i
-  for (i = 0; i < all.length; i++) {
-   var obj = all[i]
-   if (obj && obj.identifier === identifier) {
-    if (type === "ride") {
-     var rtSet = obj.rideType && typeof obj.rideType.length === "number" ? obj.rideType : null
-     return { type: "ride", object: obj.index, rideType: obj.rideType, rideTypeSet: rtSet, name: obj.name }
+ // -------- Usage scanning (rides + scenery) --------
+ function scanRideObjectIndices() {
+  var used = {}
+  try {
+   if (typeof map === "undefined" || !map || !map.rides) {
+    return used
+   }
+   var rides = map.rides
+   for (var i = 0; i < rides.length; i++) {
+    var r = rides[i]
+    if (!r || !r.object) {
+     continue
     }
-    return { type: "scenery", object: obj.index, name: obj.name }
-   }
-  }
- } catch (e) {}
- return null
-}
-
-function rrgb_ensureLoaded(type, identifier) {
- if (rrgb_resolveLoadedObject(type, identifier)) return true
- try {
-  objectManager.load(identifier)
- } catch (e) {}
- return !!rrgb_resolveLoadedObject(type, identifier)
-}
-
-/* ---------------- Added: enumerate installed/available objects ---------------- */
-
-function rrgb__extractSourceGames(obj) {
- try {
-  if (obj && obj.installedObject && obj.installedObject.sourceGames && obj.installedObject.sourceGames.join) {
-   return obj.installedObject.sourceGames.slice(0)
-  }
- } catch (e1) {}
- try {
-  if (obj && obj.sourceGames && obj.sourceGames.join) {
-   return obj.sourceGames.slice(0)
-  }
- } catch (e2) {}
- try {
-  if (obj && typeof obj.sourceGame === "string") {
-   return [obj.sourceGame]
-  }
- } catch (e3) {}
- return []
-}
-
-/* Enumerate ALL installed objects first (preferred), then fall back to loaded lists. */
-function rrgb_getInstalledObjects() {
- var out = []
-
- /* Primary: objectManager.installedObjects (InstalledObject[]) */
- try {
-  if (typeof objectManager !== "undefined" && objectManager && objectManager.installedObjects) {
-   var list = objectManager.installedObjects || []
-   var i
-   for (i = 0; i < list.length; i++) {
-    var io = list[i]
-    if (!io || !io.identifier) continue
-    if (io.type !== "ride" && io.type !== RRGB_API_SCENERY_GROUP) continue
-    out.push({
-     type: io.type, // "ride" | "scenery_group"
-     identifier: io.identifier,
-     name: io.name || "",
-     sourceGames: io.sourceGames && io.sourceGames.slice ? io.sourceGames.slice(0) : [],
-    })
-   }
-   return out
-  }
- } catch (_primaryErr) {
-  /* fallback below */
- }
-
- /* Fallback: enumerate currently LOADED objects */
- function pushFrom(list, logicalType) {
-  var i
-  for (i = 0; i < list.length; i++) {
-   var o = list[i]
-   if (!o || !o.identifier) continue
-   out.push({
-    type: logicalType,
-    identifier: o.identifier,
-    name: o.name || "",
-    sourceGames: rrgb__extractSourceGames(o),
-   })
-  }
- }
- try {
-  pushFrom(context.getAllObjects("ride") || [], "ride")
- } catch (_e1) {}
- try {
-  pushFrom(context.getAllObjects(RRGB_API_SCENERY_GROUP) || [], "scenery_group")
- } catch (_e2) {}
-
- return out
-}
-
-/* ---------- Ride type helpers ---------- */
-
-function rrgb_getRideTypeArray(resolvedRideObj) {
- if (!resolvedRideObj) return []
- var raw = []
- if (resolvedRideObj.rideTypeSet && typeof resolvedRideObj.rideTypeSet.length === "number") {
-  var i
-  for (i = 0; i < resolvedRideObj.rideTypeSet.length; i++) raw.push(resolvedRideObj.rideTypeSet[i])
- } else if (resolvedRideObj.rideType && typeof resolvedRideObj.rideType.length === "number") {
-  var j
-  for (j = 0; j < resolvedRideObj.rideType.length; j++) raw.push(resolvedRideObj.rideType[j])
- } else if (typeof resolvedRideObj.rideType === "number") {
-  raw.push(resolvedRideObj.rideType)
- }
- var out = []
- var seen = {}
- var k
- for (k = 0; k < raw.length; k++) {
-  var rt = raw[k]
-  if (!rrgb_isValidRideType(rt)) continue
-  var key = String(rt)
-  if (!seen[key]) {
-   seen[key] = true
-   out.push(rt)
-  }
- }
- return out
-}
-
-function rrgb_deriveRideType(identifier, preferred) {
- if (!rrgb_ensureLoaded("ride", identifier)) return null
- var obj = rrgb_resolveLoadedObject("ride", identifier)
- if (!obj) return null
- var options = rrgb_getRideTypeArray(obj)
- if (!options.length) return null
- if (rrgb_isValidRideType(preferred)) {
-  var i
-  for (i = 0; i < options.length; i++) if (options[i] === preferred) return preferred
- }
- return options[0]
-}
-
-/* ---------------- Research: snapshot, sanitize, materialize, apply ---------------- */
-
-function rrgb__isSaneRefShape(ref) {
- if (!ref) return false
- if (ref.type !== "ride" && ref.type !== "scenery") return false
- if (typeof ref.object !== "number" || !isFinite(ref.object)) return false
- if (ref.type === "ride" && !rrgb_isValidRideType(ref.rideType)) return false
- if (!rrgb_isKnownCategory(ref.type === "scenery" ? "scenery" : ref.category)) return false
- return true
-}
-
-function rrgb_snapshotResearch() {
- var research = park.research
- var out = { invented: [], uninvented: [] }
-
- function push(list, dest) {
-  var i
-  for (i = 0; i < list.length; i++) {
-   var it = list[i]
-   if (!it || (it.type !== "ride" && it.type !== "scenery")) continue
-   var id = rrgb_tryGetIdentifier(it.type, it.object)
-   if (!id) continue
-   var rec = { type: it.type, identifier: id, category: it.type === "scenery" ? "scenery" : it.category }
-   if (it.type === "ride" && rrgb_isValidRideType(it.rideType)) rec.rideType = it.rideType
-   dest.push(rec)
-  }
- }
-
- push(research.inventedItems, out.invented)
- push(research.uninventedItems, out.uninvented)
- return out
-}
-
-function rrgb_scrubResearchArrays() {
- try {
-  var inv = park.research.inventedItems || []
-  var uninv = park.research.uninventedItems || []
-  function alive(ref) {
-   return ref && rrgb_tryGetIdentifier(ref.type, ref.object) !== null
-  }
-  var i,
-   a = [],
-   b = []
-  for (i = 0; i < inv.length; i++) if (alive(inv[i])) a.push(inv[i])
-  for (i = 0; i < uninv.length; i++) if (alive(uninv[i])) b.push(uninv[i])
-  park.research.inventedItems = a
-  park.research.uninventedItems = b
- } catch (e) {}
-}
-
-function rrgb_sanitizeAndNormalizeResearchLists() {
- try {
-  var inv = park.research.inventedItems || []
-  var uninv = park.research.uninventedItems || []
-
-  function normalizeRef(raw) {
-   if (!raw || (raw.type !== "ride" && raw.type !== "scenery")) return null
-   var id = rrgb_tryGetIdentifier(raw.type, raw.object)
-   if (!id) return null
-   if (raw.type === "ride") {
-    var rt = raw.rideType
-    if (!rrgb_isValidRideType(rt)) {
-     rt = rrgb_deriveRideType(id, rt)
-     if (!rrgb_isValidRideType(rt)) return null
-    }
-    var cat = rrgb_isKnownCategory(raw.category) ? raw.category : null
-    return { type: "ride", object: raw.object, rideType: rt, category: cat, __id: id }
-   } else {
-    return { type: "scenery", object: raw.object, category: "scenery", __id: id }
-   }
-  }
-
-  var normInv = [],
-   normUn = [],
-   i
-  for (i = 0; i < inv.length; i++) {
-   var a = normalizeRef(inv[i])
-   if (a) normInv.push(a)
-  }
-  for (i = 0; i < uninv.length; i++) {
-   var b = normalizeRef(uninv[i])
-   if (b) normUn.push(b)
-  }
-
-  var seen = {},
-   outInv = [],
-   outUn = []
-
-  function pushUnique(list, into) {
-   var j
-   for (j = 0; j < list.length; j++) {
-    var it = list[j]
-    if (it.type === "ride" && !rrgb_isKnownCategory(it.category)) continue
-    var key = it.type === "ride" ? rrgb_stableKey("ride", it.__id, it.rideType) : rrgb_stableKey("scenery", it.__id, null)
-    if (!seen[key]) {
-     seen[key] = true
-     var ref = it.type === "ride" ? { type: "ride", object: it.object, rideType: it.rideType, category: it.category } : { type: "scenery", object: it.object, category: "scenery" }
-     if (rrgb__isSaneRefShape(ref)) into.push(ref)
+    var obj = r.object
+    var idx = obj && typeof obj.index === "number" ? obj.index : null
+    if (idx !== null) {
+     used[idx] = true
     }
    }
-  }
+  } catch (_) {}
+  return used
+ }
 
-  // Build invented first (wins duplicates)
-  pushUnique(normInv, outInv)
-
-  // Then uninvented without duplicating invented
-  var invSet = {},
-   idA,
-   kA
-  for (i = 0; i < outInv.length; i++) {
-   idA = rrgb_tryGetIdentifier(outInv[i].type, outInv[i].object)
-   kA = outInv[i].type === "ride" ? rrgb_stableKey("ride", idA, outInv[i].rideType) : rrgb_stableKey("scenery", idA, null)
-   invSet[kA] = true
-  }
-  for (i = 0; i < normUn.length; i++) {
-   var u = normUn[i],
-    idU = u.__id
-   var kU = u.type === "ride" ? rrgb_stableKey("ride", idU, u.rideType) : rrgb_stableKey("scenery", idU, null)
-   if (!invSet[kU] && !seen[kU]) {
-    seen[kU] = true
-    var ref2 = u.type === "ride" ? { type: "ride", object: u.object, rideType: u.rideType, category: u.category } : { type: "scenery", object: u.object, category: "scenery" }
-    if (rrgb__isSaneRefShape(ref2)) outUn.push(ref2)
+ function scanSceneryIdentifiers() {
+  var used = {}
+  try {
+   if (typeof map === "undefined" || !map || !map.size || typeof map.getTile !== "function") {
+    return used
    }
-  }
-
-  park.research.inventedItems = outInv
-  park.research.uninventedItems = outUn
- } catch (e) {}
-}
-
-/* Canonical <-> ResearchRef conversion */
-function rrgb_materializeCanonToRefs(invCanon, uninvCanon) {
- var refMap = {}
-
- function indexExisting(list) {
-  var i
-  for (i = 0; i < list.length; i++) {
-   var it = list[i]
-   if (!it) continue
-   var id = rrgb_tryGetIdentifier(it.type, it.object)
-   if (!id) continue
-   var key = it.type === "ride" ? rrgb_stableKey("ride", id, it.rideType) : rrgb_stableKey("scenery", id, null)
-   if (!refMap[key]) refMap[key] = it
-  }
- }
-
- indexExisting(park.research.inventedItems || [])
- indexExisting(park.research.uninventedItems || [])
-
- function buildRef(rec) {
-  if (rec.type === "ride" && !rrgb_isValidRideType(rec.rideType)) {
-   var fixedRt = rrgb_deriveRideType(rec.identifier, rec.rideType)
-   if (!rrgb_isValidRideType(fixedRt)) return null
-   rec = { type: "ride", identifier: rec.identifier, category: rec.category, rideType: fixedRt }
-  }
-  var key = rec.type === "ride" ? rrgb_stableKey("ride", rec.identifier, rec.rideType) : rrgb_stableKey("scenery", rec.identifier, null)
-
-  var reuse = refMap[key]
-  if (reuse) {
-   var reused = { type: reuse.type, object: reuse.object, category: rec.type === "scenery" ? "scenery" : rec.category }
-   if (rec.type === "ride") reused.rideType = rec.rideType
-   if (rrgb__isSaneRefShape(reused)) return reused
-  }
-
-  if (!rrgb_ensureLoaded(rec.type, rec.identifier)) return null
-  var obj = rrgb_resolveLoadedObject(rec.type, rec.identifier)
-  if (!obj) return null
-
-  if (rec.type === "ride" && !rrgb_isValidRideType(rec.rideType)) {
-   var rt2 = rrgb_deriveRideType(rec.identifier, rec.rideType)
-   if (!rrgb_isValidRideType(rt2)) return null
-   rec.rideType = rt2
-  }
-
-  var out = { type: rec.type, object: obj.object, category: rec.type === "scenery" ? "scenery" : rec.category }
-  if (rec.type === "ride") out.rideType = rec.rideType
-  if (!rrgb__isSaneRefShape(out)) return null
-  return out
- }
-
- var invOut = [],
-  uninvOut = [],
-  i,
-  built
- for (i = 0; i < invCanon.length; i++) {
-  built = buildRef(invCanon[i])
-  if (built) invOut.push(built)
- }
- for (i = 0; i < uninvCanon.length; i++) {
-  built = buildRef(uninvCanon[i])
-  if (built) uninvOut.push(built)
- }
- return { inv: invOut, uninv: uninvOut }
-}
-
-function rrgb_applyRefPreserving(invCanon, uninvCanon) {
- var mats = rrgb_materializeCanonToRefs(invCanon, uninvCanon)
- park.research.inventedItems = mats.inv
- park.research.uninventedItems = mats.uninv
- rrgb_scrubResearchArrays()
- rrgb_sanitizeAndNormalizeResearchLists()
-}
-
-/* ---------------- Map/park inspection & unload helpers ---------------- */
-
-function rrgb_detectRidesInUse() {
- var set = {}
- try {
-  var rides = map && map.rides ? map.rides : []
-  var i
-  for (i = 0; i < rides.length; i++) {
-   var ride = rides[i]
-   var ro = ride && ride.object
-   var identifier = ro && (ro.identifier || (ro.installedObject && ro.installedObject.identifier))
-   if (identifier) set["ride|" + identifier] = true
-  }
- } catch (e) {}
- return set
-}
-
-function rrgb_loadedIdentifierSets() {
- var out = { ride: {}, scenery: {} }
- try {
-  var rides = context.getAllObjects("ride") || []
-  var i
-  for (i = 0; i < rides.length; i++) if (rides[i] && rides[i].identifier) out.ride[rides[i].identifier] = true
- } catch (e) {}
- try {
-  var groups = context.getAllObjects(RRGB_API_SCENERY_GROUP) || []
-  var j
-  for (j = 0; j < groups.length; j++) if (groups[j] && groups[j].identifier) out.scenery[groups[j].identifier] = true
- } catch (e2) {}
- return out
-}
-
-function rrgb_purgeResearchRefsForIdentifierTyped(type, identifier, protectSet) {
- try {
-  if (protectSet && protectSet[type + "|" + identifier]) return
-  var inv = park.research.inventedItems || []
-  var uninv = park.research.uninventedItems || []
-  function keep(ref) {
-   if (!ref) return false
-   var id = rrgb_tryGetIdentifier(ref.type, ref.object)
-   if (!id) return false
-   if (ref.type === type && id === identifier) return false
-   return true
-  }
-  var i,
-   a = [],
-   b = []
-  for (i = 0; i < inv.length; i++) if (keep(inv[i])) a.push(inv[i])
-  for (i = 0; i < uninv.length; i++) if (keep(uninv[i])) b.push(uninv[i])
-  park.research.inventedItems = a
-  park.research.uninventedItems = b
- } catch (e) {}
-}
-
-function rrgb_purgeResearchRefsForIdentifier(identifier, protectSet) {
- rrgb_purgeResearchRefsForIdentifierTyped("ride", identifier, protectSet || {})
-}
-
-/* Convenience for catalog/debug: list loaded ride (identifier, rideType) pairs with category lookup */
-function rrgb_loadedRidePairs(catalog) {
- var out = []
- try {
-  var rides = context.getAllObjects("ride") || []
-  var i
-  for (i = 0; i < rides.length; i++) {
-   var r = rides[i]
-   if (!r || !r.identifier) continue
-   var types = rrgb_getRideTypeArray({ rideType: r.rideType, rideTypeSet: r.rideType })
-   var k
-   for (k = 0; k < types.length; k++) {
-    var cat = (catalog[r.identifier + "|" + String(types[k])] || {}).category
-    if (!cat) continue
-    out.push({ identifier: r.identifier, rideType: types[k], category: cat, name: r.name || "" })
+   if (typeof objectManager === "undefined" || !objectManager) {
+    return used
    }
-  }
- } catch (e) {}
- return out
-}
 
-function rrgb_loadedSceneryGroups(catalog) {
- var out = []
- try {
-  var groups = context.getAllObjects(RRGB_API_SCENERY_GROUP) || []
-  var i
-  for (i = 0; i < groups.length; i++) {
-   var g = groups[i]
-   if (!g || !g.identifier) continue
-   var e = catalog[g.identifier]
-   if (e && e.type === "scenery") out.push({ identifier: g.identifier, category: "scenery", name: g.name || "" })
-  }
- } catch (e) {}
- return out
-}
+   var size = map.size
+   var maxX = size.x || 0
+   var maxY = size.y || 0
 
-/* Unload anything newly-loaded that isn’t part of the original snapshot (and isn’t protected) */
-function rrgb_unloadExtrasToRestore(preLoaded, originalSnap) {
- try {
-  var keep = {}
-  var i
-  for (i = 0; i < originalSnap.invented.length; i++) keep[originalSnap.invented[i].type + "|" + originalSnap.invented[i].identifier] = true
-  for (i = 0; i < originalSnap.uninvented.length; i++) keep[originalSnap.uninvented[i].type + "|" + originalSnap.uninvented[i].identifier] = true
+   function mark(type, index) {
+    if (index === null || index === undefined || index < 0) {
+     return
+    }
+    var lo
+    try {
+     lo = objectManager.getObject(type, index)
+    } catch (_) {
+     lo = null
+    }
+    if (lo && lo.identifier) {
+     used[lo.identifier] = true
+    }
+   }
 
-  var inUse = rrgb_detectRidesInUse()
-  var originalScenery = {}
-  for (i = 0; i < originalSnap.invented.length; i++) if (originalSnap.invented[i].type === "scenery") originalScenery["scenery|" + originalSnap.invented[i].identifier] = true
-  for (i = 0; i < originalSnap.uninvented.length; i++) if (originalSnap.uninvented[i].type === "scenery") originalScenery["scenery|" + originalSnap.uninvented[i].identifier] = true
-
-  var protect = {}
-  var k
-  for (k in inUse) if (inUse.hasOwnProperty(k)) protect[k] = true
-  for (k in originalScenery) if (originalScenery.hasOwnProperty(k)) protect[k] = true
-
-  var now = rrgb_loadedIdentifierSets()
-
-  var rid
-  for (rid in now.ride)
-   if (now.ride.hasOwnProperty(rid)) {
-    if (!preLoaded.ride[rid] && !keep["ride|" + rid] && !protect["ride|" + rid]) {
+   for (var x = 0; x < maxX; x++) {
+    for (var y = 0; y < maxY; y++) {
+     var tile
      try {
-      objectManager.unload(rid)
-     } catch (e) {}
-     rrgb_purgeResearchRefsForIdentifierTyped("ride", rid, protect)
-    }
-   }
-
-  var sg
-  for (sg in now.scenery)
-   if (now.scenery.hasOwnProperty(sg)) {
-    if (!preLoaded.scenery[sg] && !keep["scenery|" + sg] && !protect["scenery|" + sg]) {
-     try {
-      objectManager.unload(sg)
-     } catch (e2) {}
-     rrgb_purgeResearchRefsForIdentifierTyped("scenery", sg, protect)
-    }
-   }
-
-  rrgb_scrubResearchArrays()
-  rrgb_sanitizeAndNormalizeResearchLists()
- } catch (e3) {}
-}
-
-/* ---------------------------- Public game-bridge API ---------------------------- */
-
-RR.gameBridge = {
- /* research snapshots & writes */
- snapshotResearch: rrgb_snapshotResearch,
- sanitizeAndNormalizeResearchLists: rrgb_sanitizeAndNormalizeResearchLists,
- scrubResearchArrays: rrgb_scrubResearchArrays,
- materializeCanonToRefs: rrgb_materializeCanonToRefs,
- applyRefPreserving: rrgb_applyRefPreserving,
-
- /* object resolution / load */
- tryGetIdentifier: rrgb_tryGetIdentifier,
- resolveLoadedObject: rrgb_resolveLoadedObject,
- ensureLoaded: rrgb_ensureLoaded,
- deriveRideType: rrgb_deriveRideType,
-
- /* enumeration and helpers */
- getInstalledObjects: rrgb_getInstalledObjects,
- getRideTypeArray: rrgb_getRideTypeArray,
-
- /* park inspection */
- detectRidesInUse: rrgb_detectRidesInUse,
- loadedIdentifierSets: rrgb_loadedIdentifierSets,
- loadedRidePairs: rrgb_loadedRidePairs,
- loadedSceneryGroups: rrgb_loadedSceneryGroups,
-
- /* unload helpers */
- purgeResearchRefsForIdentifierTyped: rrgb_purgeResearchRefsForIdentifierTyped,
- purgeResearchRefsForIdentifier: rrgb_purgeResearchRefsForIdentifier,
- unloadExtrasToRestore: rrgb_unloadExtrasToRestore,
-
- /* tiny exports shared with other modules */
- stableKeyFromParts: rrgb_stableKey,
- isValidRideType: rrgb_isValidRideType,
-
- /* Compatibility aliases (for older callers) */
- resolveLoaded: rrgb_resolveLoadedObject,
- applyCanon: rrgb_applyRefPreserving,
-}
-/* =========================== END MODULE: RR.gameBridge =========================== */
-
-/* ==========================================================================
-MODULE: RR.catalog  |  Smart Scan builder + ride-type category learner
-PURPOSE: Build/refresh the master catalog (rides: identifier+rideType pairs,
-scenery groups), learn rideType -> category, and persist via state.
-========================================================================== */
-
-var RR = typeof RR !== "undefined" ? RR : {}
-
-/* Local aliases & constants */
-var RR_CATALOG_CONST = RR && RR.constants ? RR.constants : null
-var RR_CATALOG_CATEGORIES = RR_CATALOG_CONST ? RR_CATALOG_CONST.CATEGORIES : ["transport", "gentle", "rollercoaster", "thrill", "water", "shop", "scenery"]
-
-/* In-memory mirrors (kept in sync with RR.state when present) */
-var RR_CATALOG_MEMO = {}
-var RR_CATALOG_BAD_RT = {}
-
-/* ---------------------------- tiny helpers ---------------------------- */
-function rr_catalogNowUtc() {
- try {
-  return Date.now()
- } catch (e) {
-  return new Date().getTime()
- }
-}
-function rr_catalogIsValidRideType(rt) {
- return typeof rt === "number" && isFinite(rt) && rt >= 0 && rt !== 255
-}
-function rr_catalogRideKey(identifier, rideType) {
- return identifier + "|" + String(rideType)
-}
-function rr_catalogHasCustomSource(installedObject) {
- try {
-  return RR_CATALOG_CONST && RR_CATALOG_CONST.hasCustomSource ? RR_CATALOG_CONST.hasCustomSource(installedObject) : false
- } catch (e) {
-  return false
- }
-}
-function rr_catalogNormName(s) {
- var raw = (s == null ? "" : String(s)).toLowerCase()
- raw = raw
-  .replace(/[^a-z0-9]+/g, " ")
-  .replace(/\s+/g, " ")
-  .replace(/^\s+|\s+$/g, "")
- return raw
-}
-
-/* When game-bridge doesn’t provide helpers yet, fall back locally */
-function rr_catalogGetInstalledObjects() {
- try {
-  if (RR.gameBridge && RR.gameBridge.getInstalledObjects) {
-   var list = RR.gameBridge.getInstalledObjects()
-   if (list && list.length >= 0) return list
-  }
- } catch (e1) {}
- // Fallback: enumerate currently loaded objects
- var out = []
- try {
-  var rides = context.getAllObjects("ride") || []
-  for (var i = 0; i < rides.length; i++) {
-   var r = rides[i]
-   if (!r || !r.identifier) continue
-   out.push({ type: "ride", identifier: r.identifier, name: r.name || "", sourceGames: r.sourceGames && r.sourceGames.slice ? r.sourceGames.slice(0) : [] })
-  }
- } catch (e2) {}
- try {
-  var groups = context.getAllObjects("scenery_group") || []
-  for (var j = 0; j < groups.length; j++) {
-   var g = groups[j]
-   if (!g || !g.identifier) continue
-   out.push({ type: "scenery_group", identifier: g.identifier, name: g.name || "", sourceGames: g.sourceGames && g.sourceGames.slice ? g.sourceGames.slice(0) : [] })
-  }
- } catch (e3) {}
- return out
-}
-function rr_catalogGetRideTypeArray(resolvedRideObj) {
- try {
-  if (RR.gameBridge && RR.gameBridge.getRideTypeArray) {
-   return RR.gameBridge.getRideTypeArray(resolvedRideObj) || []
-  }
- } catch (e) {}
- if (!resolvedRideObj) return []
- var raw = []
- if (resolvedRideObj.rideTypeSet && typeof resolvedRideObj.rideTypeSet.length === "number") {
-  for (var i = 0; i < resolvedRideObj.rideTypeSet.length; i++) raw.push(resolvedRideObj.rideTypeSet[i])
- } else if (resolvedRideObj.rideType && typeof resolvedRideObj.rideType.length === "number") {
-  for (var j = 0; j < resolvedRideObj.rideType.length; j++) raw.push(resolvedRideObj.rideType[j])
- } else if (typeof resolvedRideObj.rideType === "number") {
-  raw.push(resolvedRideObj.rideType)
- }
- var out = [],
-  seen = {}
- for (var k = 0; k < raw.length; k++) {
-  var rt = raw[k]
-  if (!rr_catalogIsValidRideType(rt)) continue
-  var key = String(rt)
-  if (!seen[key]) {
-   seen[key] = true
-   out.push(rt)
-  }
- }
- return out
-}
-
-/* ----------------------- state access (safe) -------------------------- */
-function rr_catalogGetCatalog() {
- try {
-  if (RR.state && RR.state.getCatalog) {
-   return RR.state.getCatalog() || {}
-  }
- } catch (e) {}
- return RR_CATALOG_MEMO || {}
-}
-function rr_catalogSetCatalog(cat) {
- var c = cat || {}
- try {
-  if (RR.state && RR.state.saveCatalog) {
-   RR.state.saveCatalog(c)
-  }
- } catch (e) {}
- RR_CATALOG_MEMO = c
-}
-function rr_catalogGetBadRideTypes() {
- try {
-  if (RR.state && RR.state.getBadRideTypes) {
-   return RR.state.getBadRideTypes() || {}
-  }
- } catch (e) {}
- return RR_CATALOG_BAD_RT || {}
-}
-function rr_catalogSetBadRideTypes(map) {
- var m = map || {}
- try {
-  if (RR.state && RR.state.saveBadRideTypes) {
-   RR.state.saveBadRideTypes(m)
-  }
- } catch (e) {}
- RR_CATALOG_BAD_RT = m
-}
-function rr_catalogTouchMetaAfterScan() {
- var meta = {}
- try {
-  if (RR.state && RR.state._getMeta) {
-   meta = RR.state._getMeta() || {}
-  }
- } catch (e) {}
- meta.lastScanUtc = rr_catalogNowUtc()
- try {
-  if (RR.state && RR.state._setMeta) {
-   RR.state._setMeta(meta)
-  }
- } catch (e2) {}
-}
-
-/* ------------------- scan-needed detection --------------------------- */
-function rr_catalogHasAnyRideKey(cat, identifier) {
- for (var k in cat) {
-  if (cat.hasOwnProperty(k) && k.indexOf(identifier + "|") === 0) return true
- }
- return false
-}
-function rr_catalogComputeScanNeeded() {
- try {
-  var list = rr_catalogGetInstalledObjects()
-  if (!list) {
-   return { needed: true, reason: "bridge unavailable" }
-  }
-  var catalog = rr_catalogGetCatalog()
-  var bad = rr_catalogGetBadRideTypes()
-
-  for (var ck in catalog) {
-   if (!catalog.hasOwnProperty(ck)) continue
-   var e = catalog[ck]
-   if (e && e.type === "ride" && !e.category) {
-    if (!bad[String(e.rideType)]) {
-     return { needed: true, reason: "uncategorized rides" }
-    }
-   }
-  }
-  for (var i = 0; i < list.length; i++) {
-   var io = list[i]
-   if (!io) continue
-   if (io.type === "scenery_group") {
-    if (!catalog[io.identifier]) {
-     return { needed: true, reason: "new scenery groups" }
-    }
-   } else if (io.type === "ride") {
-    if (!rr_catalogHasAnyRideKey(catalog, io.identifier)) {
-     return { needed: true, reason: "new rides" }
-    }
-   }
-  }
-  return { needed: false, reason: "" }
- } catch (e) {
-  return { needed: true, reason: "error: " + e.message }
- }
-}
-
-/* --------------------- loading for inspection ------------------------ */
-function rr_catalogLoadAllIfNeeded() {
- // PERF: only rides need loading for rideType[]; scenery groups are skipped.
- var out = { touched: 0 }
- var list = rr_catalogGetInstalledObjects() || []
- for (var i = 0; i < list.length; i++) {
-  var io = list[i]
-  if (!io || io.type !== "ride") continue
-  try {
-   if (RR.gameBridge && RR.gameBridge.ensureLoaded && RR.gameBridge.ensureLoaded("ride", io.identifier)) {
-    out.touched++
-   }
-  } catch (e) {
-   /* ignore load failures during scan */
-  }
- }
- return out
-}
-
-/* ----------------------- build catalog entries ----------------------- */
-function rr_catalogScanAllToCatalog() {
- var cat = rr_catalogGetCatalog()
- var list = rr_catalogGetInstalledObjects() || []
- var added = 0
-
- for (var i = 0; i < list.length; i++) {
-  var io = list[i]
-  if (!io) continue
-
-  if (io.type === "scenery_group") {
-   var prevS = cat[io.identifier]
-   if (!prevS || prevS.type !== "scenery") {
-    cat[io.identifier] = {
-     type: "scenery",
-     identifier: io.identifier,
-     category: "scenery",
-     name: io && io.name ? io.name : "",
-     isCustom: rr_catalogHasCustomSource(io),
-    }
-    added++
-   } else {
-    prevS.isCustom = rr_catalogHasCustomSource(io)
-    if (!prevS.name && io && io.name) prevS.name = io.name
-   }
-   continue
-  }
-
-  if (io.type !== "ride") continue
-
-  try {
-   if (RR.gameBridge && RR.gameBridge.ensureLoaded) {
-    RR.gameBridge.ensureLoaded("ride", io.identifier)
-   }
-  } catch (e1) {}
-
-  var ro = null
-  try {
-   ro = RR.gameBridge && RR.gameBridge.resolveLoadedObject ? RR.gameBridge.resolveLoadedObject("ride", io.identifier) : null
-  } catch (e2) {
-   ro = null
-  }
-  if (!ro) continue
-
-  var rtypes = []
-  try {
-   rtypes = rr_catalogGetRideTypeArray(ro) || []
-  } catch (e3) {
-   rtypes = []
-  }
-  if (!rtypes || !rtypes.length) continue
-
-  var nameForSig = (ro && ro.name) || (io && io.name) || ""
-  var sig = rr_catalogNormName(nameForSig)
-
-  for (var r = 0; r < rtypes.length; r++) {
-   var rt = rtypes[r]
-   var key = rr_catalogRideKey(io.identifier, rt)
-   var prev = cat[key]
-   if (!prev || prev.type !== "ride" || prev.rideType !== rt) {
-    cat[key] = {
-     type: "ride",
-     identifier: io.identifier,
-     rideType: rt,
-     name: ro && ro.name ? ro.name : "",
-     category: prev && prev.category ? prev.category : null,
-     isCustom: rr_catalogHasCustomSource(io),
-     variantSig: sig, // NEW: pre-normalized name signature for pools
-    }
-    added++
-   } else {
-    prev.isCustom = rr_catalogHasCustomSource(io)
-    if (!prev.name && ro && ro.name) prev.name = ro.name
-    if (!prev.variantSig && ro && ro.name) prev.variantSig = rr_catalogNormName(ro.name)
-   }
-  }
- }
-
- rr_catalogSetCatalog(cat)
- return { added: added }
-}
-
-/* ------------------- learn categories from snapshot ------------------ */
-function rr_catalogLearnRtFromSnapshot(rtMap, snapshot) {
- var map_ = rtMap || {}
- if (!snapshot) return map_
-
- function harvest(list) {
-  for (var i = 0; i < list.length; i++) {
-   var it = list[i]
-   if (!it) continue
-   if (it.type === "ride" && rr_catalogIsValidRideType(it.rideType) && typeof it.category === "string") {
-    map_[String(it.rideType)] = it.category
-   }
-  }
- }
- try {
-  harvest(snapshot.invented || [])
- } catch (e1) {}
- try {
-  harvest(snapshot.uninvented || [])
- } catch (e2) {}
-
- return map_
-}
-
-/* -------------------- probe unknown ride types safely ----------------- */
-function rr_catalogProbeUnknownRideTypes(rtMap, catalog, originalSnapshot) {
- var bad = rr_catalogGetBadRideTypes()
- var unknown = []
- for (var k in catalog) {
-  if (!catalog.hasOwnProperty(k)) continue
-  var e = catalog[k]
-  if (e && e.type === "ride") {
-   var rtk = String(e.rideType)
-   if (!rtMap[rtk] && !bad[rtk]) {
-    unknown.push({ identifier: e.identifier, rideType: e.rideType })
-   }
-  }
- }
- if (!unknown.length) return { derived: 0 }
- if (!RR.gameBridge || !RR.gameBridge.applyRefPreserving || !RR.gameBridge.snapshotResearch) {
-  return { derived: 0 }
- }
-
- var probeInv = []
- for (var i = 0; i < unknown.length; i++) {
-  var p = unknown[i]
-  if (!rr_catalogIsValidRideType(p.rideType)) {
-   bad[String(p.rideType)] = true
-   continue
-  }
-  probeInv.push({ type: "ride", identifier: p.identifier, rideType: p.rideType, category: "gentle" })
- }
- if (!probeInv.length) {
-  rr_catalogSetBadRideTypes(bad)
-  return { derived: 0 }
- }
-
- try {
-  RR.gameBridge.applyRefPreserving(probeInv, [])
-  var back = RR.gameBridge.snapshotResearch()
-  var derived = 0
-  var seenGood = {}
-
-  var inv = back && back.invented ? back.invented : []
-  for (var j = 0; j < inv.length; j++) {
-   var it = inv[j]
-   if (it && it.type === "ride" && rr_catalogIsValidRideType(it.rideType) && typeof it.category === "string") {
-    var rtk = String(it.rideType)
-    rtMap[rtk] = it.category
-    seenGood[rtk] = true
-    derived++
-   }
-  }
-  for (var u = 0; u < unknown.length; u++) {
-   var rtk2 = String(unknown[u].rideType)
-   if (!seenGood[rtk2]) bad[rtk2] = true
-  }
-  rr_catalogSetBadRideTypes(bad)
-  if (originalSnapshot) {
-   try {
-    RR.gameBridge.applyRefPreserving(originalSnapshot.invented || [], originalSnapshot.uninvented || [])
-   } catch (_e) {}
-  }
-  return { derived: derived }
- } catch (e) {
-  try {
-   if (originalSnapshot) {
-    RR.gameBridge.applyRefPreserving(originalSnapshot.invented || [], originalSnapshot.uninvented || [])
-   }
-  } catch (_e2) {}
-  return { derived: 0 }
- }
-}
-
-/* ------------------- write categories back to catalog ----------------- */
-function rr_catalogWriteCategories(rtMap) {
- var cat = rr_catalogGetCatalog()
- var changed = 0
- var categorized = 0
- for (var k in cat) {
-  if (!cat.hasOwnProperty(k)) continue
-  var e = cat[k]
-  if (!e) continue
-  if (e.type === "scenery") {
-   e.category = "scenery"
-   categorized++
-   continue
-  }
-  var mapped = rtMap[String(e.rideType)]
-  if (mapped) {
-   if (e.category !== mapped) {
-    e.category = mapped
-    changed++
-   }
-   categorized++
-  }
- }
- rr_catalogSetCatalog(cat)
- return { changed: changed, categorized: categorized }
-}
-
-/* ------------------- summarize for UI/debugging ---------------------- */
-function rr_catalogSummarize() {
- var cat = rr_catalogGetCatalog()
- var counts = { transport: 0, gentle: 0, rollercoaster: 0, thrill: 0, water: 0, shop: 0, scenery: 0 }
- for (var k in cat) {
-  if (!cat.hasOwnProperty(k)) continue
-  var e = cat[k]
-  if (!e || !e.category) continue
-  if (counts.hasOwnProperty(e.category)) {
-   counts[e.category] += 1
-  }
- }
- return counts
-}
-
-/* ----------------------------- public API ---------------------------- */
-function rr_catalogRunSmartScan(opts) {
- if (!RR.gameBridge) {
-  return { ok: false, reason: "bridge unavailable" }
- }
-
- var need = rr_catalogComputeScanNeeded()
- var catEmpty = (function () {
-  var c = rr_catalogGetCatalog()
-  for (var k in c) {
-   if (c.hasOwnProperty(k)) return false
-  }
-  return true
- })()
- if (!need.needed && !catEmpty) {
-  rr_catalogTouchMetaAfterScan()
-  return { ok: true, reason: "already up-to-date", counts: rr_catalogSummarize() }
- }
-
- var originalSnap = opts && opts.snapshot ? opts.snapshot : RR.gameBridge.snapshotResearch ? RR.gameBridge.snapshotResearch() : null
- var preLoaded = RR.gameBridge.loadedIdentifierSets ? RR.gameBridge.loadedIdentifierSets() : { ride: {}, scenery: {} }
-
- rr_catalogLoadAllIfNeeded()
- rr_catalogScanAllToCatalog()
-
- var rtMap = rr_catalogLearnRtFromSnapshot({}, originalSnap || (RR.gameBridge.snapshotResearch ? RR.gameBridge.snapshotResearch() : null))
- rr_catalogProbeUnknownRideTypes(rtMap, rr_catalogGetCatalog(), originalSnap)
- rr_catalogWriteCategories(rtMap)
-
- try {
-  if (RR.gameBridge.unloadExtrasToRestore && originalSnap) {
-   RR.gameBridge.unloadExtrasToRestore(preLoaded, originalSnap)
-  } else if (RR.gameBridge.applyRefPreserving && originalSnap) {
-   RR.gameBridge.applyRefPreserving(originalSnap.invented || [], originalSnap.uninvented || [])
-  }
- } catch (_e) {}
-
- rr_catalogTouchMetaAfterScan()
- return { ok: true, reason: "scanned", counts: rr_catalogSummarize() }
-}
-
-function rr_catalogEnsureReady(opts) {
- var status = rr_catalogComputeScanNeeded()
- if (status.needed) {
-  return rr_catalogRunSmartScan(opts || {})
- }
- return { ok: true, reason: "ready", counts: rr_catalogSummarize() }
-}
-
-/* export */
-RR.catalog = {
- runSmartScan: rr_catalogRunSmartScan,
- ensureReady: rr_catalogEnsureReady,
- get: function () {
-  return rr_catalogGetCatalog()
- },
- summarize: rr_catalogSummarize,
- computeScanNeeded: rr_catalogComputeScanNeeded,
-}
-/* ========================== END MODULE: RR.catalog ========================== */
-
-/* ==========================================================================
-   MODULE: RR.baselineTargets  |  Captures per-level baseline + computes targets
-   PURPOSE: Record immutable baseline counts (per category) and compute totals
-            for any multiplier. Baseline & targets EXCLUDE default fixed items
-            and the two special IDs (ATM/Info), so guarantees never displace.
-   ========================================================================== */
-
-var RR = typeof RR !== "undefined" ? RR : {}
-
-/* ---- local helpers & aliases ---- */
-
-var RRBT_CONST = RR && RR.constants ? RR.constants : null
-var RRBT_CATS = RRBT_CONST && RRBT_CONST.CATEGORIES ? RRBT_CONST.CATEGORIES : ["transport", "gentle", "rollercoaster", "thrill", "water", "shop", "scenery"]
-
-function rrbt_isKnownCategory(c) {
- return RRBT_CONST && RRBT_CONST.isKnownCategory
-  ? RRBT_CONST.isKnownCategory(c)
-  : (function () {
-     for (var i = 0; i < RRBT_CATS.length; i++) if (RRBT_CATS[i] === c) return true
-     return false
-    })()
-}
-function rrbt_isDefaultFixed(identifier) {
- return RRBT_CONST && RRBT_CONST.isDefaultFixedId ? RRBT_CONST.isDefaultFixedId(identifier) : false
-}
-function rrbt_isSpecial(identifier) {
- return RRBT_CONST && RRBT_CONST.isSpecialId ? RRBT_CONST.isSpecialId(identifier) : false
-}
-
-function rrbt_zeroPerCategory() {
- var m = {}
- for (var i = 0; i < RRBT_CATS.length; i++) m[RRBT_CATS[i]] = 0
- return m
-}
-
-function rrbt_now() {
- try {
-  return Date.now()
- } catch (e) {
-  return new Date().getTime()
- }
-}
-
-/* Count current snapshot → baseline-ish tallies (excluding defaults/specials) */
-function rrbt_countFromSnapshot(snapshot) {
- var invented = rrbt_zeroPerCategory()
- var selection = rrbt_zeroPerCategory()
- var defaultsPresent = rrbt_zeroPerCategory() // informational only
-
- function bump(map, cat) {
-  if (!rrbt_isKnownCategory(cat)) return
-  map[cat] = (map[cat] || 0) + 1
- }
-
- function consider(entry, isInvented) {
-  if (!entry || typeof entry.identifier !== "string") return
-  var id = entry.identifier
-  var cat = entry.category || null
-  if (!rrbt_isKnownCategory(cat)) return
-
-  if (rrbt_isDefaultFixed(id)) {
-   bump(defaultsPresent, cat)
-   return // excluded from counts
-  }
-  if (rrbt_isSpecial(id)) {
-   return // excluded from counts
-  }
-
-  // mutable selection counts
-  bump(selection, cat)
-  if (isInvented) bump(invented, cat)
- }
-
- var i
- var inv = snapshot && snapshot.invented ? snapshot.invented : []
- var uninv = snapshot && snapshot.uninvented ? snapshot.uninvented : []
-
- for (i = 0; i < inv.length; i++) consider(inv[i], true)
- for (i = 0; i < uninv.length; i++) consider(uninv[i], false)
-
- // totals
- var totals = { invented: 0, selection: 0 }
- for (i = 0; i < RRBT_CATS.length; i++) {
-  var c = RRBT_CATS[i]
-  totals.invented += invented[c]
-  totals.selection += selection[c]
- }
-
- return {
-  inventedByCat: invented, // mutable-only invented counts
-  selectionByCat: selection, // mutable-only total (invented + uninvented)
-  defaultsByCat: defaultsPresent, // info only (not used in targets)
-  totals: totals,
- }
-}
-
-/* Build the immutable baseline object we persist per-level */
-function rrbt_buildBaseline(snapshot) {
- var counts = rrbt_countFromSnapshot(snapshot || (RR.gameBridge && RR.gameBridge.snapshotResearch ? RR.gameBridge.snapshotResearch() : { invented: [], uninvented: [] }))
- return {
-  version: 1,
-  createdAt: rrbt_now(),
-  byCategory: (function () {
-   var m = {}
-   for (var i = 0; i < RRBT_CATS.length; i++) {
-    var c = RRBT_CATS[i]
-    m[c] = {
-     baselineSelection: counts.selectionByCat[c], // mutable-only
-     baselineInvented: counts.inventedByCat[c], // mutable-only (fixed across runs)
-     defaultsPresent: counts.defaultsByCat[c], // informational
-    }
-   }
-   return m
-  })(),
-  totals: counts.totals, // mutable-only totals
- }
-}
-
-/* Round with standard Math.round; clamp to at least invented count */
-function rrbt_scaledTarget(selBase, invBase, multiplier) {
- var scaled = Math.round(selBase * (typeof multiplier === "number" ? multiplier : 1.0))
- if (scaled < invBase) scaled = invBase
- return scaled
-}
-
-/* ----------------------------- public API ----------------------------- */
-
-function rrbt_ensureBaseline(opts) {
- var snap = opts && opts.snapshot ? opts.snapshot : RR.gameBridge && RR.gameBridge.snapshotResearch ? RR.gameBridge.snapshotResearch() : null
- var have = RR.state && RR.state.getBaseline ? RR.state.getBaseline() : null
-
- if (have && have.byCategory && typeof have.createdAt === "number") {
-  return have
- }
-
- var base = rrbt_buildBaseline(snap)
- if (RR.state && RR.state.saveBaseline) {
-  RR.state.saveBaseline(base)
- }
- return base
-}
-
-function rrbt_computeTargets(opts) {
- var mult = opts && typeof opts.multiplier === "number" ? opts.multiplier : 1.0
- var base = RR.state && RR.state.getBaseline ? RR.state.getBaseline() : null
- if (!base || !base.byCategory) {
-  // safety: build on the fly if missing
-  base = rrbt_buildBaseline(opts && opts.snapshot ? opts.snapshot : RR.gameBridge && RR.gameBridge.snapshotResearch ? RR.gameBridge.snapshotResearch() : null)
-  if (RR.state && RR.state.saveBaseline) RR.state.saveBaseline(base)
- }
-
- var per = {}
- var totals = { baselineSelection: 0, baselineInvented: 0, targetSelection: 0, targetUninvented: 0 }
-
- for (var i = 0; i < RRBT_CATS.length; i++) {
-  var c = RRBT_CATS[i]
-  var row = base.byCategory[c] || { baselineSelection: 0, baselineInvented: 0, defaultsPresent: 0 }
-  var bSel = row.baselineSelection | 0
-  var bInv = row.baselineInvented | 0
-  var tSel = rrbt_scaledTarget(bSel, bInv, mult)
-  var tUn = tSel - bInv
-  if (tUn < 0) tUn = 0
-
-  per[c] = {
-   baselineSelection: bSel, // mutable-only
-   baselineInvented: bInv, // mutable-only (must remain constant)
-   targetSelection: tSel, // mutable-only → pools must fill to this
-   targetUninvented: tUn, // = targetSelection - baselineInvented
-   defaultsPresent: row.defaultsPresent | 0, // informational
-  }
-
-  totals.baselineSelection += bSel
-  totals.baselineInvented += bInv
-  totals.targetSelection += tSel
-  totals.targetUninvented += tUn
- }
-
- return {
-  multiplier: mult,
-  perCategory: per,
-  totals: totals,
-  createdAt: base.createdAt,
- }
-}
-
-/* export */
-RR.baselineTargets = {
- ensureBaseline: rrbt_ensureBaseline,
- computeTargets: rrbt_computeTargets,
-
- /* (optional helpers for testing/inspection) */
- _countFromSnapshot: rrbt_countFromSnapshot,
- _buildBaseline: rrbt_buildBaseline,
-}
-/* ========================= END MODULE: RR.baselineTargets ========================= */
-
-/* ==========================================================================
-MODULE: RR.poolsAndFilters  |  Build per-category candidate pools
-PURPOSE: Start from current snapshot + catalog and produce category pools,
-         excluding defaults, rides in use, exact Type+Vehicle duplicates
-         (now using catalog.variantSig, no object loads), and optionally
-         non-whitelisted sources.
-========================================================================== */
-
-var RR = typeof RR !== "undefined" ? RR : {}
-
-var RPF_CATS = RR && RR.constants && RR.constants.CATEGORIES ? RR.constants.CATEGORIES : ["transport", "gentle", "rollercoaster", "thrill", "water", "shop", "scenery"]
-
-function rpf_isDefaultFixed(id) {
- try {
-  return RR.constants && RR.constants.isDefaultFixedId ? RR.constants.isDefaultFixedId(id) : false
- } catch (e) {
-  return false
- }
-}
-function rpf_isKnownCategory(c) {
- for (var i = 0; i < RPF_CATS.length; i++) if (RPF_CATS[i] === c) return true
- return false
-}
-function rpf_stableKey(rec) {
- if (!rec || !rec.identifier) return "bad"
- if (rec.type === "ride") {
-  var rt = rec.rideType
-  return RR.gameBridge && RR.gameBridge.stableKeyFromParts ? RR.gameBridge.stableKeyFromParts("ride", rec.identifier, rt) : "ride|" + rec.identifier + "|" + String(rt)
- }
- return RR.gameBridge && RR.gameBridge.stableKeyFromParts ? RR.gameBridge.stableKeyFromParts("scenery", rec.identifier, null) : "scenery|" + rec.identifier
-}
-function rpf_normName(s) {
- var raw = (s == null ? "" : String(s)).toLowerCase()
- raw = raw
-  .replace(/[^a-z0-9]+/g, " ")
-  .replace(/\s+/g, " ")
-  .replace(/^\s+|\s+$/g, "")
- return raw
-}
-
-/* Catalog-level “is custom” */
-function rpf_isCatalogCustom(rec, catalog) {
- if (!catalog || !rec || !rec.identifier) return false
- if (rec.type === "ride") {
-  var ck = rec.identifier + "|" + String(rec.rideType)
-  return catalog[ck] && catalog[ck].isCustom ? true : false
- }
- return catalog[rec.identifier] && catalog[rec.identifier].isCustom ? true : false
-}
-
-/* Conservative fallback if catalog row is missing */
-function rpf_isIdentifierNonWhitelisted(type, identifier) {
- try {
-  if (typeof objectManager !== "undefined" && objectManager && objectManager.getInstalledObject) {
-   var inst = objectManager.getInstalledObject(identifier)
-   if (inst && RR.constants && RR.constants.isWhitelistedSource) {
-    return !RR.constants.isWhitelistedSource(inst)
-   }
-  }
- } catch (_e) {}
- try {
-  if (RR.gameBridge && RR.gameBridge.ensureLoaded && RR.gameBridge.resolveLoadedObject) {
-   var logical = type === "scenery" ? "scenery" : "ride"
-   if (RR.gameBridge.ensureLoaded(logical, identifier)) {
-    var apiType = logical === "scenery" ? "scenery_group" : "ride"
-    var o = context.getObject(apiType, RR.gameBridge.resolveLoadedObject(logical, identifier).object)
-    var instObj = o && o.installedObject
-    if (instObj && RR.constants && RR.constants.isWhitelistedSource) {
-     return !RR.constants.isWhitelistedSource(instObj)
-    }
-   }
-  }
- } catch (_e2) {}
- return true
-}
-
-/* Policy for existing items */
-function rpf_shouldIncludeExisting(rec, inUseSet) {
- if (!rec || !rec.identifier || !rec.type) return false
- if (rpf_isDefaultFixed(rec.identifier)) return false
- if (rec.type === "ride" && inUseSet && inUseSet["ride|" + rec.identifier]) return false
- if (!rpf_isKnownCategory(rec.category)) return false
- return true
-}
-
-/* Policy for new catalog items */
-function rpf_shouldIncludeFromCatalog(e, inUseSet, excludeCustom) {
- if (!e || !e.category || !rpf_isKnownCategory(e.category)) return false
- if (rpf_isDefaultFixed(e.identifier)) return false
- if (e.type === "ride" && inUseSet && inUseSet["ride|" + e.identifier]) return false
- if (excludeCustom && e.isCustom) return false
- return true
-}
-
-function rpf_build(opts) {
- var snapshot = (opts && opts.snapshot) || { invented: [], uninvented: [] }
- var inUseSet = (opts && opts.inUse) || {}
- var excludeCustom = !!(opts && opts.excludeCustom)
- var catalog = RR.catalog && RR.catalog.get ? RR.catalog.get() : {}
-
- /* Local variant-key function that NEVER loads objects.
-    Uses catalog[identifier|rideType].variantSig (pre-normalized); falls
-    back to normalized catalog name; finally falls back to identifier. */
- function localVariantKey(rec) {
-  if (!rec || rec.type !== "ride") return "scenery|" + (rec && rec.identifier ? rec.identifier : "bad")
-  var ck = rec.identifier + "|" + String(rec.rideType)
-  var row = catalog[ck]
-  var sig = (row && row.variantSig) || (row && row.name ? rpf_normName(row.name) : null) || rec.identifier
-  return "ridevar|" + String(rec.rideType) + "|" + sig
- }
-
- // Initialize containers
- var byCategory = {},
-  existingInv = {},
-  existingUninv = {},
-  variantSeen = {},
-  stableSeen = {}
- for (var i = 0; i < RPF_CATS.length; i++) {
-  var c = RPF_CATS[i]
-  byCategory[c] = []
-  existingInv[c] = []
-  existingUninv[c] = []
-  variantSeen[c] = {}
-  stableSeen[c] = {}
- }
-
- // Seed with current presence to prevent exact variant duplicates
- function seedVariant(list) {
-  for (var k = 0; k < list.length; k++) {
-   var r = list[k]
-   if (!r || !r.category || !rpf_isKnownCategory(r.category)) continue
-   if (r.type === "ride") {
-    if (typeof r.rideType !== "number" && RR.gameBridge && RR.gameBridge.isValidRideType && RR.gameBridge.deriveRideType) {
-     var deriv = RR.gameBridge.deriveRideType ? RR.gameBridge.deriveRideType(r.identifier, r.rideType) : null
-     if (RR.gameBridge.isValidRideType(deriv)) r.rideType = deriv
-    }
-    variantSeen[r.category][localVariantKey(r)] = true
-   } else {
-    stableSeen[r.category][rpf_stableKey(r)] = true
-   }
-  }
- }
- seedVariant(snapshot.invented || [])
- seedVariant(snapshot.uninvented || [])
-
- // Add existing items (respect excludeCustom policy now)
- function considerExisting(list, intoMap) {
-  for (var j = 0; j < list.length; j++) {
-   var rec = list[j]
-   if (!rpf_shouldIncludeExisting(rec, inUseSet)) continue
-
-   if (excludeCustom) {
-    var catalogSaysCustom = rpf_isCatalogCustom(rec, catalog)
-    var isNonWhite = catalogSaysCustom || rpf_isIdentifierNonWhitelisted(rec.type, rec.identifier)
-    if (isNonWhite) continue
-   }
-
-   if (rec.type === "ride" && RR.gameBridge && RR.gameBridge.isValidRideType && !RR.gameBridge.isValidRideType(rec.rideType)) {
-    var fixRt = RR.gameBridge.deriveRideType ? RR.gameBridge.deriveRideType(rec.identifier, rec.rideType) : null
-    if (RR.gameBridge.isValidRideType(fixRt)) rec.rideType = fixRt
-    else continue
-   }
-   var cat = rec.category
-   var sKey = rpf_stableKey(rec)
-   var vKey = rec.type === "ride" ? localVariantKey(rec) : null
-   if (stableSeen[cat][sKey]) continue
-   if (vKey && variantSeen[cat][vKey]) continue
-   stableSeen[cat][sKey] = true
-   if (vKey) variantSeen[cat][vKey] = true
-   intoMap[cat].push(rec)
-  }
- }
- considerExisting(snapshot.invented || [], existingInv)
- considerExisting(snapshot.uninvented || [], existingUninv)
-
- // Add catalog items (new candidates), honoring excludeCustom
- for (var key in catalog)
-  if (catalog.hasOwnProperty(key)) {
-   var e = catalog[key]
-   if (!rpf_shouldIncludeFromCatalog(e, inUseSet, excludeCustom)) continue
-
-   var rec = e.type === "ride" ? { type: "ride", identifier: e.identifier, category: e.category, rideType: e.rideType } : { type: "scenery", identifier: e.identifier, category: "scenery" }
-
-   var cat2 = rec.category
-   var sKey2 = rpf_stableKey(rec)
-   var vKey2 = rec.type === "ride" ? localVariantKey(rec) : null
-
-   if (stableSeen[cat2][sKey2]) continue
-   if (vKey2 && variantSeen[cat2][vKey2]) continue
-
-   stableSeen[cat2][sKey2] = true
-   if (vKey2) variantSeen[cat2][vKey2] = true
-   byCategory[cat2].push(rec)
-  }
-
- // Final per-category stable-key uniquing
- for (i = 0; i < RPF_CATS.length; i++) {
-  var cname = RPF_CATS[i],
-   arr = byCategory[cname],
-   out = [],
-   seen = {}
-  for (var a = 0; a < arr.length; a++) {
-   var k2 = rpf_stableKey(arr[a])
-   if (!seen[k2]) {
-    seen[k2] = true
-    out.push(arr[a])
-   }
-  }
-  byCategory[cname] = out
- }
-
- return {
-  byCategory: byCategory,
-  existingInvByCategory: existingInv,
-  existingUninvByCategory: existingUninv,
-  variantSeenByCategory: variantSeen,
-  _helpers: {
-   stableKey: rpf_stableKey,
-   variantKey: localVariantKey, // used by selectionRules; no loads
-  },
- }
-}
-
-/* Public API (tests may still call these) */
-function rpf_variantKey(rec) {
- // Keep a cheap, load-free baseline for tests; selection uses _helpers.variantKey
- if (!rec || rec.type !== "ride") return "scenery|" + (rec && rec.identifier ? rec.identifier : "bad")
- return "ridevar|" + String(rec.rideType) + "|" + rec.identifier
-}
-
-RR.poolsAndFilters = {
- build: rpf_build,
- _variantKeyForTest: rpf_variantKey,
- _stableKeyForTest: rpf_stableKey,
-}
-/* ============================ END MODULE: RR.poolsAndFilters ============================ */
-
-/* ==========================================================================
-MODULE: RR.selectionRules  |  Weighted picking, duplicate penalties, specials
-PURPOSE: Selects per-category invented & uninvented sets that hit targets,
-applies squared ride-type penalties, forbids exact Type+Vehicle
-duplicates, and adds guaranteed ATM/Info without displacing picks.
-=========================================================================== */
-
-var RR = typeof RR !== "undefined" ? RR : {}
-
-/* ------------------------------ locals --------------------------------- */
-var RR_SEL_CONST = RR && RR.constants ? RR.constants : null
-var RR_SEL_CATS = RR_SEL_CONST && RR_SEL_CONST.CATEGORIES ? RR_SEL_CONST.CATEGORIES : ["transport", "gentle", "rollercoaster", "thrill", "water", "shop", "scenery"]
-
-// Optional hook provided by pools module for strict Type+Vehicle keys
-var RR_SEL_variantKeyHelper = null
-
-/* ----------------------------- helpers --------------------------------- */
-function rr_selIsRide(c) {
- return c && c.type === "ride"
-}
-
-// Prefer strict variant key from pools._helpers.variantKey if provided.
-function rr_selVariantKey(c) {
- if (!c) return ""
- if (RR_SEL_variantKeyHelper && typeof RR_SEL_variantKeyHelper === "function") {
-  try {
-   return String(RR_SEL_variantKeyHelper(c))
-  } catch (e) {}
- }
- if (c.variantKey && typeof c.variantKey === "string") return c.variantKey
- if (rr_selIsRide(c)) return "ride|" + c.identifier + "|" + String(c.rideType)
- return "scenery|" + c.identifier
-}
-function rr_selRtKey(c) {
- return rr_selIsRide(c) ? String(c.rideType) : null
-}
-
-/* --- DEFENSE-IN-DEPTH custom-source filtering --- */
-
-/* Return true if identifier is clearly non-whitelisted (or unknown => treat as non-white). */
-function rr_selIsIdentifierNonWhitelisted(type, identifier) {
- // Try installed object metadata (preferred in modern builds)
- try {
-  if (typeof objectManager !== "undefined" && objectManager && objectManager.getInstalledObject) {
-   var inst = objectManager.getInstalledObject(identifier)
-   if (inst && RR.constants && RR.constants.isWhitelistedSource) {
-    return !RR.constants.isWhitelistedSource(inst)
-   }
-  }
- } catch (_e1) {}
- // Fallback: try loaded object -> installedObject meta
- try {
-  if (RR.gameBridge && RR.gameBridge.ensureLoaded && RR.gameBridge.resolveLoadedObject) {
-   var logical = type === "scenery" ? "scenery" : "ride"
-   if (RR.gameBridge.ensureLoaded(logical, identifier)) {
-    var apiType = logical === "scenery" ? "scenery_group" : "ride"
-    var r = RR.gameBridge.resolveLoadedObject(logical, identifier)
-    if (r && typeof r.object === "number") {
-     var o = context.getObject(apiType, r.object)
-     var instObj = o && o.installedObject
-     if (instObj && RR.constants && RR.constants.isWhitelistedSource) {
-      return !RR.constants.isWhitelistedSource(instObj)
+      tile = map.getTile(x, y)
+     } catch (_) {
+      continue
+     }
+     if (!tile || !tile.elements) {
+      continue
+     }
+     var elements = tile.elements
+     for (var ei = 0; ei < elements.length; ei++) {
+      var el = elements[ei]
+      if (!el) {
+       continue
+      }
+      var t = el.type
+      if (t === "small_scenery") {
+       mark("small_scenery", el.object)
+      } else if (t === "large_scenery") {
+       mark("large_scenery", el.object)
+      } else if (t === "wall") {
+       mark("wall", el.object)
+      } else if (t === "banner") {
+       mark("banner", el.object)
+      } else if (t === "footpath") {
+       if (el.object != null) {
+        mark("footpath", el.object)
+       }
+       if (el.addition != null) {
+        mark("footpath_addition", el.addition)
+       }
+       if (el.surfaceObject != null) {
+        mark("footpath_surface", el.surfaceObject)
+       }
+       if (el.railingsObject != null) {
+        mark("footpath_railings", el.railingsObject)
+       }
+      }
      }
     }
    }
-  }
- } catch (_e2) {}
- // Conservative default: if we cannot prove whitelist, treat as non-whitelisted
- return true
-}
+  } catch (_) {}
+  return used
+ }
 
-/* Catalog-based custom flag with safe fallback. */
-function rr_selIsNonWhitelistedCandidate(c, catalog) {
- if (!c || !c.identifier) return true
- try {
-  var isCustom = false
-  if (catalog) {
-   if (c.type === "ride") {
-    var ck = c.identifier + "|" + String(c.rideType)
-    if (catalog[ck] && typeof catalog[ck].isCustom !== "undefined") {
-     isCustom = !!catalog[ck].isCustom
-     return isCustom
+ function computeSceneryGroupIndices(usedSceneryIdentifiers) {
+  var used = {}
+  if (!usedSceneryIdentifiers || typeof objectManager === "undefined" || !objectManager) {
+   return used
+  }
+  try {
+   var groups = objectManager.getAllObjects("scenery_group") || []
+   for (var i = 0; i < groups.length; i++) {
+    var sg = groups[i]
+    if (!sg || !sg.items) {
+     continue
     }
+    var items = sg.items
+    var anyUsed = false
+    for (var j = 0; j < items.length; j++) {
+     if (usedSceneryIdentifiers[items[j]]) {
+      anyUsed = true
+      break
+     }
+    }
+    if (anyUsed) {
+     used[sg.index] = true
+    }
+   }
+  } catch (_) {}
+  return used
+ }
+
+ // -------- Identifier -> index caches --------
+ var _rideIndexById = null
+ var _groupIndexById = null
+
+ function _buildIndexCaches() {
+  _rideIndexById = {}
+  _groupIndexById = {}
+
+  if (typeof objectManager === "undefined" || !objectManager || !objectManager.getAllObjects) {
+   return
+  }
+
+  try {
+   var rides = objectManager.getAllObjects("ride") || []
+   for (var i = 0; i < rides.length; i++) {
+    var ro = rides[i]
+    if (!ro || !ro.identifier) {
+     continue
+    }
+    _rideIndexById[ro.identifier] = ro.index
+   }
+  } catch (_) {}
+
+  try {
+   var groups = objectManager.getAllObjects("scenery_group") || []
+   for (var j = 0; j < groups.length; j++) {
+    var sg = groups[j]
+    if (!sg || !sg.identifier) {
+     continue
+    }
+    _groupIndexById[sg.identifier] = sg.index
+   }
+  } catch (_) {}
+ }
+
+ function getIndexCaches() {
+  if (!_rideIndexById || !_groupIndexById) {
+   _buildIndexCaches()
+  }
+  return {
+   rideIndexById: _rideIndexById || {},
+   groupIndexById: _groupIndexById || {},
+  }
+ }
+
+ // Explicit invalidator so each run can rebuild caches from the
+ // *current* loaded object set (important after unload).
+ function clearIndexCaches() {
+  _rideIndexById = null
+  _groupIndexById = null
+ }
+
+ return {
+  asciiLower: asciiLower,
+  getEssentialModeForKey: getEssentialModeForKey,
+  categoryFromItem: categoryFromItem,
+  scanRideObjectIndices: scanRideObjectIndices,
+  scanSceneryIdentifiers: scanSceneryIdentifiers,
+  computeSceneryGroupIndices: computeSceneryGroupIndices,
+  getIndexCaches: getIndexCaches,
+  clearIndexCaches: clearIndexCaches,
+ }
+})()
+/* ============= End of RR.helper.core ============= */
+
+/** ==================================================
+ * Module: RR.log.core
+ * Purpose: Uniform logging & user-facing messages; gate info on Verbose.
+ * Exports: RR.log
+ * Imports: None
+ * Version: 3.0.0-alpha.0   Since: 2025-11-13
+ * =================================================== */
+var RR = RR || {}
+RR.log = (function () {
+ function tag() {
+  var sid = typeof scenario !== "undefined" && scenario && scenario.filename ? scenario.filename : "no-scenario"
+  var seed = RR.state && RR.state.options ? RR.state.options.seed : "?"
+  return "[RR V3|" + seed + "|" + sid + "]"
+ }
+ function out(prefix, msg) {
+  console.log(tag() + " " + prefix + " " + msg)
+ }
+ function toast(msg) {
+  try {
+   if (typeof park !== "undefined" && park && park.postMessage) {
+    park.postMessage({ type: "research", text: RR.config.UI_NAME + ": " + msg })
+   }
+  } catch (_) {}
+ }
+ function isVerbose() {
+  return !!(RR.state && RR.state.options && RR.state.options.verboseLogging)
+ }
+ return {
+  info: function (msg) {
+   if (isVerbose()) out("[INFO]", msg)
+  },
+  warn: function (msg) {
+   out("[WARN]", msg)
+  },
+  error: function (msg) {
+   out("[ERROR]", msg)
+  },
+  toast: toast,
+ }
+})()
+/* ============= End of RR.log.core ============= */
+
+/** ==================================================
+ * Module: RR.state.core
+ * Purpose: In-memory state bag for options and UI refs.
+ * Exports: RR.state
+ * Imports: RR.config
+ * Version: 3.0.0-alpha.0   Since: 2025-11-13
+ * =================================================== */
+var RR = RR || {}
+RR.state = {
+ options: JSON.parse(JSON.stringify(RR.config.DEFAULTS)),
+ ui: { window: null },
+}
+/* ============= End of RR.state.core ============= */
+
+/** ==================================================
+ * Module: RR.store.core
+ * Purpose: Wrapper over OpenRCT2 storage to persist options.
+ * Exports: RR.store
+ * Imports: RR.config, RR.state, RR.log
+ * Version: 3.0.0-alpha.2   Since: 2025-11-15
+ * =================================================== */
+var RR = RR || {}
+RR.store = (function () {
+ function _shared() {
+  return context.sharedStorage
+ }
+ function _park() {
+  return context.getParkStorage(RR.config.INTERNAL_NAME)
+ }
+
+ function loadOptions() {
+  var persisted = _shared().get(RR.config.STORAGE.SHARED_KEY, {})
+  var merged = {},
+   k
+
+  // Start from defaults.
+  for (k in RR.config.DEFAULTS) {
+   if (RR.config.DEFAULTS.hasOwnProperty(k)) {
+    merged[k] = RR.config.DEFAULTS[k]
+   }
+  }
+
+  // Overlay any persisted options.
+  for (k in persisted) {
+   if (persisted.hasOwnProperty(k)) {
+    merged[k] = persisted[k]
+   }
+  }
+
+  // Migrate legacy preserveCategoryRatio -> categoryMode if needed.
+  if (typeof merged.categoryMode !== "string" || (merged.categoryMode !== "preserve" && merged.categoryMode !== "even")) {
+   if (typeof merged.preserveCategoryRatio === "boolean") {
+    merged.categoryMode = merged.preserveCategoryRatio ? "preserve" : "even"
    } else {
-    if (catalog[c.identifier] && typeof catalog[c.identifier].isCustom !== "undefined") {
-     isCustom = !!catalog[c.identifier].isCustom
-     return isCustom
+    merged.categoryMode = "preserve"
+   }
+  }
+
+  RR.state.options = merged
+  RR.log.info("Loaded options from storage.")
+  return merged
+ }
+
+ function saveOptions() {
+  _shared().set(RR.config.STORAGE.SHARED_KEY, RR.state.options)
+  RR.log.info("Saved options to shared storage.")
+ }
+
+ function flushAll() {
+  _shared().set(RR.config.STORAGE.SHARED_KEY, {})
+  _park().set(RR.config.STORAGE.PARK_KEY, {})
+  RR.log.warn("Persistent storage cleared for plugin (options + park baseline).")
+ }
+
+ return { loadOptions: loadOptions, saveOptions: saveOptions, flushAll: flushAll }
+})()
+/* ============= End of RR.store.core ============= */
+
+/** ==================================================
+ * Module: RR.special.cases
+ * Purpose: Detect default/essential items (allowed tokens only) for filtering/diagnostics, using identifiers.
+ *          Default set is discovered once by name, then tracked by identifier only.
+ * Exports: RR.specialCases
+ * Imports: RR.state, RR.helper, (global objectManager)
+ * Version: 3.0.0-alpha.8   Since: 2025-11-15
+ * =================================================== */
+var RR = RR || {}
+RR.specialCases = (function () {
+ // Canonical default scenery group names (ascii-lower, trimmed).
+ // These correspond to: trees | shrubs and ornaments | gardens | fences and walls | walls and roofs | signs and items for footpaths.
+ var DEFAULT_SCENERY_NAMES = {
+  trees: true,
+  "shrubs and ornaments": true,
+  "shrubs and bushes": true, // tolerate minor variants
+  "shrubs and flowers": true,
+  gardens: true,
+  "fences and walls": true,
+  "walls and roofs": true,
+  "signs and items for footpaths": true,
+  "signs and items for paths": true, // tolerate minor variants
+ }
+
+ // Canonical default ride names; currently just Toilets.
+ var DEFAULT_RIDE_NAMES = {
+  toilets: true,
+ }
+
+ // Essential ride token groups, keyed by logical essential type.
+ // These are still name-based heuristics, but only for special essentials
+ // and are resolved per-ride by identifier once classifyRideObject is used.
+ var ESSENTIAL_GROUPS = {
+  info: {
+   tokens: ["information kiosk", "info kiosk", "kiosk"],
+  },
+  cash: {
+   tokens: ["cash machine", "atm"],
+  },
+  firstAid: {
+   tokens: ["first aid"],
+  },
+ }
+
+ // Name-dedup maps for default and essential groups.
+ // For defaults we dedup by identifier; for essentials we still dedup by name.
+ var _seenDefaultIds = {}
+ var _seenEssentialNames = {}
+
+ // Default identifier caches (discovered once from names, then used by identifier only).
+ // Keys are ascii-lower identifiers.
+ var _defaultRideIds = {}
+ var _defaultSceneryGroupIds = {}
+ var _defaultCacheBuilt = false
+
+ function _resetSeen() {
+  _seenDefaultIds = {}
+  _seenEssentialNames = {}
+ }
+
+ function _asciiLower(s) {
+  return RR.helper.asciiLower(s)
+ }
+
+ function _get(type, idx) {
+  try {
+   return objectManager.getObject(type, idx)
+  } catch (_) {
+   return null
+  }
+ }
+
+ // Resolve useful info for a ResearchItem-like entry:
+ //  - lo: underlying object
+ //  - nameLower: ascii-lower of lo.name (player-visible)
+ //  - idLower: ascii-lower of lo.identifier
+ //  - fullLower: ascii-lower of identifier + name (for token matching)
+ function _resolveInfo(it) {
+  if (!it || typeof it.object !== "number") {
+   return null
+  }
+  var t = it.type === "ride" ? "ride" : "scenery_group"
+  var lo = _get(t, it.object)
+  if (!lo) {
+   return null
+  }
+  var nameLower = _asciiLower(lo.name || "")
+  var idLower = _asciiLower(lo.identifier || "")
+  var fullLower = _asciiLower((lo.identifier || "") + " " + (lo.name || ""))
+  return {
+   lo: lo,
+   nameLower: nameLower,
+   idLower: idLower,
+   fullLower: fullLower,
+  }
+ }
+
+ // Determine which essential group (if any) a string belongs to.
+ // Returns "info" | "cash" | "firstAid" | null.
+ function _classifyEssentialFromString(fullLower) {
+  if (!fullLower) {
+   return null
+  }
+  var key, i, tokens
+
+  for (key in ESSENTIAL_GROUPS) {
+   if (!ESSENTIAL_GROUPS.hasOwnProperty(key)) {
+    continue
+   }
+   tokens = ESSENTIAL_GROUPS[key].tokens
+   for (i = 0; i < tokens.length; i++) {
+    if (fullLower.indexOf(tokens[i]) !== -1) {
+     return key
     }
    }
   }
- } catch (_e) {}
- // Fallback to direct identifier check
- return rr_selIsIdentifierNonWhitelisted(c.type, c.identifier)
-}
-
-/* weight = base / (count(rt)^2) ; when count==0 => 1
-exact-variant duplicates => weight 0 (excluded) */
-function rr_selWeightFor(c, rtCountMap, usedVariantSet) {
- if (!c) return 0
- var vKey = rr_selVariantKey(c)
- if (usedVariantSet[vKey]) return 0
- if (!rr_selIsRide(c)) return 1
- var key = rr_selRtKey(c)
- var count = key && rtCountMap[key] ? rtCountMap[key] : 0
- var denom = count > 0 ? count * count : 1
- var base = typeof c.weightBase === "number" && c.weightBase > 0 ? c.weightBase : 1
- return base / denom
-}
-
-/* Weighted random pick from candidates under current constraints */
-function rr_selPickOne(candidates, rtCountMap, usedVariantSet) {
- var i,
-  total = 0,
-  weights = []
- for (i = 0; i < candidates.length; i++) {
-  var w = rr_selWeightFor(candidates[i], rtCountMap, usedVariantSet)
-  weights.push(w)
-  total += w
- }
- if (total <= 0) return null
- var r = Math.random() * total
- for (i = 0; i < candidates.length; i++) {
-  r -= weights[i]
-  if (r <= 0 && weights[i] > 0) return candidates[i]
- }
- // Fallback: first positive weight
- for (i = 0; i < candidates.length; i++) if (weights[i] > 0) return candidates[i]
- return null
-}
-
-/* Remove a candidate (by variantKey) from a working pool */
-function rr_selRemoveFromPool(pool, chosen) {
- var out = []
- var vk = rr_selVariantKey(chosen)
- var i
- for (i = 0; i < pool.length; i++) {
-  if (rr_selVariantKey(pool[i]) !== vk) out.push(pool[i])
- }
- return out
-}
-
-/* Resolve pools map regardless of wrapper shape */
-function rr_selPoolsMap(poolsInput) {
- if (!poolsInput) return {}
- if (poolsInput.byCategory) return poolsInput.byCategory
- return poolsInput
-}
-
-/* Select N total items with optional allow-predicate.
-   If allowPred is provided, filter the working pool with it up-front. */
-function rr_selSelectForCategory(pool, totalTarget, invTarget, usedVariantSet, warnings, allowPred) {
- var invented = []
- var uninvented = []
- var rtCount = {} // rideType -> count across invented+uninvented for this category
-
- var base = pool ? pool.slice(0) : []
- var work = []
- var i
- for (i = 0; i < base.length; i++) {
-  var c = base[i]
-  if (!allowPred || allowPred(c)) work.push(c)
- }
-
- var picked,
-  needInv = invTarget,
-  needMore = Math.max(0, totalTarget - invTarget)
-
- // Phase 1: invented
- while (needInv > 0 && work.length > 0) {
-  picked = rr_selPickOne(work, rtCount, usedVariantSet)
-  if (!picked) break
-  invented.push(picked)
-  usedVariantSet[rr_selVariantKey(picked)] = true
-  if (rr_selIsRide(picked)) {
-   var rk = rr_selRtKey(picked)
-   rtCount[rk] = (rtCount[rk] || 0) + 1
-  }
-  work = rr_selRemoveFromPool(work, picked)
-  needInv--
- }
-
- // Phase 2: uninvented
- while (needMore > 0 && work.length > 0) {
-  picked = rr_selPickOne(work, rtCount, usedVariantSet)
-  if (!picked) break
-  uninvented.push(picked)
-  usedVariantSet[rr_selVariantKey(picked)] = true
-  if (rr_selIsRide(picked)) {
-   var rk2 = rr_selRtKey(picked)
-   rtCount[rk2] = (rtCount[rk2] || 0) + 1
-  }
-  work = rr_selRemoveFromPool(work, picked)
-  needMore--
- }
-
- // Shortfall notices (soft)
- if (invented.length < invTarget) {
-  warnings.push("[" + (pool && pool[0] ? pool[0].category || "category" : "category") + "] not enough candidates to fill invented (" + invented.length + "/" + invTarget + ").")
- }
- if (invented.length + uninvented.length < totalTarget) {
-  warnings.push("[" + (pool && pool[0] ? pool[0].category || "category" : "category") + "] not enough candidates to reach total (" + (invented.length + uninvented.length) + "/" + totalTarget + ").")
- }
-
- return { invented: invented, uninvented: uninvented }
-}
-
-/* Find a specific item in NEW-CANDIDATE pools by identifier (does NOT include existing snapshot items) */
-function rr_selFindInPools(poolsInput, identifier) {
- if (!poolsInput) return null
- var byCat = rr_selPoolsMap(poolsInput)
- var i, j, cat
- for (i = 0; i < RR_SEL_CATS.length; i++) {
-  cat = RR_SEL_CATS[i]
-  var arr = byCat[cat] || []
-  for (j = 0; j < arr.length; j++) {
-   if (arr[j] && arr[j].identifier === identifier) return arr[j]
-  }
- }
- return null
-}
-
-/* NEW: find in EXISTING snapshot mirrors built by pools (invented or uninvented). */
-function rr_selFindInExisting(poolsInput, identifier) {
- if (!poolsInput) return null
- var invMap = poolsInput.existingInvByCategory || {}
- var unMap = poolsInput.existingUninvByCategory || {}
- var i, arr
- // Check INVENTED first (guarantee already satisfied)
- for (i = 0; i < RR_SEL_CATS.length; i++) {
-  arr = invMap[RR_SEL_CATS[i]] || []
-  for (var a = 0; a < arr.length; a++) if (arr[a] && arr[a].identifier === identifier) return { where: "invented", rec: arr[a] }
- }
- // Then UNINVENTED (we will promote)
- for (i = 0; i < RR_SEL_CATS.length; i++) {
-  arr = unMap[RR_SEL_CATS[i]] || []
-  for (var b = 0; b < arr.length; b++) if (arr[b] && arr[b].identifier === identifier) return { where: "uninvented", rec: arr[b] }
- }
- return null
-}
-
-/* Fallback: materialize a canonical record from the catalog when it wasn't in pools. */
-function rr_selFromCatalog(identifier) {
- try {
-  if (!RR.catalog || !RR.catalog.get) return null
-  var cat = RR.catalog.get() || {}
-  var pick = null
-  for (var k in cat)
-   if (cat.hasOwnProperty(k)) {
-    var e = cat[k]
-    if (!e || !e.identifier) continue
-    if (e.identifier === identifier) {
-     pick = e
-     if (e.type === "ride") break
-    }
-   }
-  if (!pick) return null
-  if (pick.type === "ride") {
-   return { type: "ride", identifier: pick.identifier, category: pick.category || "shop", rideType: pick.rideType }
-  }
-  return { type: "scenery", identifier: pick.identifier, category: "scenery" }
- } catch (_e) {
   return null
  }
-}
 
-/* Build “extras” for guaranteed ATM/Info, without displacing targets. */
-function rr_selBuildSpecialAdds(opts, poolsInput, usedVariantSet, warnings) {
- var extras = []
- var reqATM = !!opts.guaranteeATM
- var reqInfo = !!opts.guaranteeInfo
+ // Build default identifier caches once by scanning loaded objects and
+ // matching against the canonical default-name sets above. From then on,
+ // default classification uses identifier membership only.
+ function _buildDefaultIdentifierCache() {
+  _defaultRideIds = {}
+  _defaultSceneryGroupIds = {}
+  _defaultCacheBuilt = true
 
- function ensureAdded(identifier, label) {
-  // 0) If it already exists in INVENTED -> nothing to do
-  var existing = rr_selFindInExisting(poolsInput, identifier)
-  if (existing && existing.where === "invented") {
-   return true
+  if (typeof objectManager === "undefined" || !objectManager || !objectManager.getAllObjects) {
+   return
   }
 
-  // 1) Candidate source priority: existing UNINVENTED (promote) → byCategory → catalog
-  var c = existing && existing.where === "uninvented" ? existing.rec : rr_selFindInPools(poolsInput, identifier)
-  if (!c) c = rr_selFromCatalog(identifier)
+  // Discover default rides (currently Toilets).
+  try {
+   var rides = objectManager.getAllObjects("ride") || []
+   for (var i = 0; i < rides.length; i++) {
+    var ro = rides[i]
+    if (!ro || !ro.name || !ro.identifier) {
+     continue
+    }
+    var nameLower = _asciiLower(ro.name)
+    if (!DEFAULT_RIDE_NAMES[nameLower]) {
+     continue
+    }
+    var idLower = _asciiLower(ro.identifier)
+    if (!idLower) {
+     continue
+    }
+    _defaultRideIds[idLower] = true
+   }
+  } catch (_) {}
 
-  if (!c) {
-   warnings.push(label + " requested but not available (not found in snapshot, pools, or catalog).")
+  // Discover default scenery groups (trees, shrubs/ornaments, gardens, etc.).
+  try {
+   var groups = objectManager.getAllObjects("scenery_group") || []
+   for (var j = 0; j < groups.length; j++) {
+    var sg = groups[j]
+    if (!sg || !sg.name || !sg.identifier) {
+     continue
+    }
+    var gNameLower = _asciiLower(sg.name)
+    if (!DEFAULT_SCENERY_NAMES[gNameLower]) {
+     continue
+    }
+    var gIdLower = _asciiLower(sg.identifier)
+    if (!gIdLower) {
+     continue
+    }
+    _defaultSceneryGroupIds[gIdLower] = true
+   }
+  } catch (_) {}
+ }
+
+ function _ensureDefaultCache() {
+  if (!_defaultCacheBuilt) {
+   _buildDefaultIdentifierCache()
+  }
+ }
+
+ // Default items:
+ //  - Scenery groups whose identifier is in _defaultSceneryGroupIds, OR
+ //  - Rides whose identifier is in _defaultRideIds (e.g., Toilets).
+ // Additional rule: within this group, only one object per identifier, per scan.
+ function _isDefault(it) {
+  _ensureDefaultCache()
+
+  var info = _resolveInfo(it)
+  if (!info) {
+   return false
+  }
+  var idKey = info.idLower
+  if (!idKey) {
    return false
   }
 
-  // 2) Don’t add an exact Type+Vehicle duplicate
-  var vk = rr_selVariantKey(c)
-  if (usedVariantSet[vk]) {
-   return true
+  // Identifier-based membership checks.
+  if (it.type !== "ride") {
+   if (!_defaultSceneryGroupIds[idKey]) {
+    return false
+   }
+  } else {
+   if (!_defaultRideIds[idKey]) {
+    return false
+   }
   }
 
-  // 3) Reserve its variant and push as invented extra
-  usedVariantSet[vk] = true
-  extras.push({
-   type: c.type,
-   identifier: c.identifier,
-   category: c.category || "shop",
-   rideType: rr_selIsRide(c) ? c.rideType : undefined,
-   __label: label,
-  })
+  // One-per-identifier per scan.
+  if (_seenDefaultIds[idKey]) {
+   return false
+  }
+  _seenDefaultIds[idKey] = true
   return true
  }
 
- if (reqATM && RR_SEL_CONST && RR_SEL_CONST.SPECIAL_IDS && RR_SEL_CONST.SPECIAL_IDS.CASH_MACHINE) {
-  ensureAdded(RR_SEL_CONST.SPECIAL_IDS.CASH_MACHINE, "ATM")
- }
- if (reqInfo && RR_SEL_CONST && RR_SEL_CONST.SPECIAL_IDS && RR_SEL_CONST.SPECIAL_IDS.INFO_KIOSK) {
-  ensureAdded(RR_SEL_CONST.SPECIAL_IDS.INFO_KIOSK, "Info Kiosk")
- }
- return extras
-}
+ // Essential items:
+ //  - Rides whose identifier+name contains any ESSENTIAL_GROUPS[*].tokens.
+ // Additional rules:
+ //  - Within this group, only one object per nameLower, per scan.
+ //  - If the configured mode for that essential group is "ignore", it is NOT treated as essential.
+ function _isEssential(it) {
+  if (it.type !== "ride") {
+   return false
+  }
 
-/* ------------------------------ select() --------------------------------
-opts = {
-  pools: { [category]: Candidate[] } OR { byCategory:{[category]:Candidate}, _helpers?:{variantKey?:fn}, existingInvByCategory, existingUninvByCategory },
-  targets: { perCategory: { [category]: { targetSelection:number, baselineInvented:number } } },
-  guaranteeATM: boolean,
-  guaranteeInfo: boolean,
-  excludeCustom: boolean   // NEW: defense-in-depth
-}
---------------------------------------------------------------------------- */
-function rr_selSelect(opts) {
- var poolsInput = opts && opts.pools ? opts.pools : {}
- var byCat = rr_selPoolsMap(poolsInput)
- RR_SEL_variantKeyHelper = poolsInput && poolsInput._helpers && typeof poolsInput._helpers.variantKey === "function" ? poolsInput._helpers.variantKey : null
- var excludeCustom = !!(opts && opts.excludeCustom)
+  var info = _resolveInfo(it)
+  if (!info) {
+   return false
+  }
+  var s = info.fullLower
+  var nameKey = info.nameLower
 
- var targets = opts && opts.targets ? opts.targets : { perCategory: {} }
- var usedVariantSet = {} // global, across categories
- var plan = { perCategory: {}, specials: { added: [], cashRequested: !!opts.guaranteeATM, infoRequested: !!opts.guaranteeInfo }, warnings: [], _variantKeysUsed: usedVariantSet }
+  var key = _classifyEssentialFromString(s)
+  if (!key) {
+   return false
+  }
 
- // Catalog snapshot for quick `isCustom` lookups
- var catalog = null
- try {
-  catalog = RR.catalog && RR.catalog.get ? RR.catalog.get() : null
- } catch (_e) {}
+  var mode = RR.helper.getEssentialModeForKey(key)
+  if (mode === "ignore") {
+   return false
+  }
 
- // Allow-predicate enforcing excludeCustom at selection time
- var allowPred = function (c) {
-  if (!excludeCustom) return true
-  return !rr_selIsNonWhitelistedCandidate(c, catalog)
+  if (_seenEssentialNames[nameKey]) {
+   return false
+  }
+  _seenEssentialNames[nameKey] = true
+  return true
  }
 
- var i, cat
- for (i = 0; i < RR_SEL_CATS.length; i++) {
-  cat = RR_SEL_CATS[i]
-  var pool = byCat[cat] || []
-  var tgt = targets.perCategory && targets.perCategory[cat] ? targets.perCategory[cat] : {}
+ // Public tag function used by:
+ //  - RR.randomSpecial.splitBySpecial
+ //  - RR.unload and dev unload planners
+ //
+ // Name-dedup is applied within a logical scan; callers are responsible
+ // for calling resetSeen() at the start of each scan.
+ function tagItem(it) {
+  if (_isDefault(it)) {
+   return "default"
+  }
+  if (_isEssential(it)) {
+   return "essential"
+  }
+  return null
+ }
 
-  // BaselineTargets naming (with backward-compat fallback)
-  var totalTarget = typeof tgt.targetSelection === "number" ? tgt.targetSelection : typeof tgt.total === "number" ? tgt.total : 0
-  var invTarget = typeof tgt.baselineInvented === "number" ? tgt.baselineInvented : typeof tgt.invented === "number" ? tgt.invented : 0
+ // Classifier for raw ride objects (from objectManager.getAllObjects("ride")).
+ // Returns "info" | "cash" | "firstAid" | null.
+ function classifyRideObject(rideObject) {
+  if (!rideObject) {
+   return null
+  }
+  var fullLower = _asciiLower((rideObject.identifier || "") + " " + (rideObject.name || ""))
+  return _classifyEssentialFromString(fullLower)
+ }
 
-  var picks = rr_selSelectForCategory(pool, totalTarget, invTarget, usedVariantSet, plan.warnings, allowPred)
+ return {
+  tagItem: tagItem,
+  resetSeen: _resetSeen,
+  classifyRideObject: classifyRideObject,
+ }
+})()
+/* ============= End of RR.special.cases ============= */
 
-  function canonize(a) {
-   var out = []
-   var k
-   for (k = 0; k < a.length; k++) {
-    var c = a[k]
-    if (!c) continue
-    out.push({
-     type: c.type,
-     identifier: c.identifier,
-     category: c.category || cat,
-     rideType: rr_selIsRide(c) ? c.rideType : undefined,
-    })
+/** ==================================================
+ * Module: RR.catalog.core
+ * Purpose: Build the master identity list from installed objects, applying only type/custom filters
+ *          and global exact-name de-duplication (per type).
+ * Exports: RR.catalog
+ * Imports: RR.state, RR.log, RR.helper
+ * Version: 3.0.0-alpha.8   Since: 2025-11-15
+ * =================================================== */
+var RR = RR || {}
+RR.catalog = (function () {
+ function _asciiLower(s) {
+  return RR.helper.asciiLower(s)
+ }
+
+ /**
+  * Decide if an installed object should be treated as "custom":
+  *  - sourceGames contains "custom"  -> custom
+  *  - missing / empty / malformed   -> custom
+  *  - otherwise                     -> canonical
+  */
+ function _isCustomSource(src) {
+  if (!src || !src.length) {
+   // Missing or empty: treat as custom so they get filtered if excludeCustom is on.
+   return true
+  }
+
+  var sawTag = false
+  for (var i = 0; i < src.length; i++) {
+   var tag = String(src[i] || "").toLowerCase()
+   if (!tag) {
+    continue
    }
-   return out
-  }
-
-  plan.perCategory[cat] = {
-   invented: canonize(picks.invented),
-   uninvented: canonize(picks.uninvented),
-  }
- }
-
- // Add specials as separate extras (don’t displace invented targets)
- var extraAdds = rr_selBuildSpecialAdds({ guaranteeATM: !!opts.guaranteeATM, guaranteeInfo: !!opts.guaranteeInfo }, poolsInput, usedVariantSet, plan.warnings)
- plan.specials.added = extraAdds
-
- // reset helper hook for safety across calls
- RR_SEL_variantKeyHelper = null
-
- return plan
-}
-
-/* ------------------------------ export --------------------------------- */
-RR.selectionRules = {
- select: rr_selSelect,
-}
-/* ======================= END MODULE: RR.selectionRules ======================= */
-
-/* ==========================================================================
-MODULE: RR.applyAndRepair | Final write, prune-to-targets, and safety repair
-PURPOSE: Turn a selection plan into final research lists, reinsert defaults,
-add guaranteed specials, prune loaded extras to hit per-category
-targets (except specials), and do a safety repair pass.
-========================================================================== */
-
-var RR = typeof RR !== "undefined" ? RR : {}
-
-/* ------------------------------ locals --------------------------------- */
-
-var RR_AR_CONST = RR && RR.constants ? RR.constants : null
-var RR_AR_CATS = RR_AR_CONST && RR_AR_CONST.CATEGORIES ? RR_AR_CONST.CATEGORIES : ["transport", "gentle", "rollercoaster", "thrill", "water", "shop", "scenery"]
-
-/* stable key for canonical items */
-function rrar_stableCanonKey(rec) {
- if (!rec || !rec.identifier) return "bad"
- if (rec.type === "ride") {
-  var rt = typeof rec.rideType === "number" ? rec.rideType : -1
-  if (RR.gameBridge && RR.gameBridge.stableKeyFromParts) {
-   return RR.gameBridge.stableKeyFromParts("ride", rec.identifier, rt)
-  }
-  return "ride|" + rec.identifier + "|" + String(rt)
- }
- if (RR.gameBridge && RR.gameBridge.stableKeyFromParts) {
-  return RR.gameBridge.stableKeyFromParts("scenery", rec.identifier, null)
- }
- return "scenery|" + rec.identifier
-}
-
-function rrar_isDefaultFixed(id) {
- try {
-  return RR_AR_CONST && RR_AR_CONST.isDefaultFixedId ? RR_AR_CONST.isDefaultFixedId(id) : false
- } catch (e) {
-  return false
- }
-}
-function rrar_isSpecial(id) {
- try {
-  return RR_AR_CONST && RR_AR_CONST.isSpecialId ? RR_AR_CONST.isSpecialId(id) : false
- } catch (e) {
-  return false
- }
-}
-
-/* Build a (type,identifier,rideType?,category) canonical record safely */
-function rrar_canon(type, identifier, category, rideType) {
- var rec = { type: type, identifier: identifier, category: type === "scenery" ? "scenery" : category }
- if (type === "ride" && typeof rideType === "number") {
-  rec.rideType = rideType
- }
- return rec
-}
-
-/* -------------------- defaults & specials reinsertion ------------------- */
-
-/* Reinsert defaults exactly where they originally lived (invented/uninvented). */
-function rrar_collectDefaultsFromSnapshot(snapshot) {
- var out = { inv: [], un: [] }
- if (!snapshot) return out
- function harvest(list, into) {
-  var i
-  for (i = 0; i < list.length; i++) {
-   var it = list[i]
-   if (!it || !it.identifier) continue
-   if (rrar_isDefaultFixed(it.identifier)) {
-    into.push(rrar_canon(it.type, it.identifier, it.category, it.rideType))
+   sawTag = true
+   if (tag === "custom") {
+    return true
    }
   }
- }
- harvest(snapshot.invented || [], out.inv)
- harvest(snapshot.uninvented || [], out.un)
- return out
-}
 
-/* Append guaranteed specials to invented (don’t displace random picks). */
-function rrar_mergeSpecials(invCanon, specials) {
- try {
-  if (!specials || !specials.added || !specials.added.length) return invCanon
-  var out = invCanon.slice(0)
-  var i
-  for (i = 0; i < specials.added.length; i++) {
-   var s = specials.added[i]
-   if (!s || !s.identifier) continue
-   // Safety: avoid duplicates
-   var k = rrar_stableCanonKey(s)
-   var dup = false
-   var j
-   for (j = 0; j < out.length; j++) {
-    if (rrar_stableCanonKey(out[j]) === k) {
-     dup = true
-     break
-    }
-   }
-   if (!dup) out.push(rrar_canon(s.type, s.identifier, s.category, s.rideType))
-  }
-  return out
- } catch (e) {
-  return invCanon
- }
-}
-
-/* ---------------------- canon assembly & de-dup ------------------------ */
-
-function rrar_assembleCanonFromPlan(plan, snapshot) {
- var inv = []
- var uninv = []
-
- var i,
-  cat,
-  per = plan && plan.perCategory ? plan.perCategory : {}
-
- for (i = 0; i < RR_AR_CATS.length; i++) {
-  cat = RR_AR_CATS[i]
-  var row = per[cat] || { invented: [], uninvented: [] }
-
-  // copy (strip any transient fields)
-  var a, it
-  for (a = 0; a < row.invented.length; a++) {
-   it = row.invented[a]
-   if (!it || !it.identifier) continue
-   inv.push(rrar_canon(it.type, it.identifier, it.category || cat, it.rideType))
-  }
-  for (a = 0; a < row.uninvented.length; a++) {
-   it = row.uninvented[a]
-   if (!it || !it.identifier) continue
-   uninv.push(rrar_canon(it.type, it.identifier, it.category || cat, it.rideType))
-  }
+  // We saw at least one non-empty tag and none were "custom" -> canonical.
+  return !sawTag ? true : false
  }
 
- // Add guaranteed specials to invented (if any)
- inv = rrar_mergeSpecials(inv, plan && plan.specials ? plan.specials : null)
+ /**
+  * Build the master identity list of *researchable* items:
+  *  - rides and scenery groups only
+  *  - optional filter for custom items (excludeCustom)
+  *  - deduped by identifier
+  *  - deduped by exact player-visible name per type (ride/scenery)
+  *
+  * No default/essential detection, no usage checks, no category logic.
+  */
+ function buildMaster() {
+  var excludeCustom = !!(RR.state && RR.state.options && RR.state.options.excludeCustom)
 
- // Reinsert defaults based on where they originally were
- var defs = rrar_collectDefaultsFromSnapshot(snapshot)
- var d
- for (d = 0; d < defs.inv.length; d++) inv.push(defs.inv[d])
- for (d = 0; d < defs.un.length; d++) uninv.push(defs.un[d])
-
- // De-dup: invented has priority over uninvented; then make each list unique.
- var seen = {}
- var invOut = []
- var i1
- for (i1 = 0; i1 < inv.length; i1++) {
-  var ki = rrar_stableCanonKey(inv[i1])
-  if (!seen[ki]) {
-   seen[ki] = true
-   invOut.push(inv[i1])
-  }
- }
- var unOut = []
- var i2
- for (i2 = 0; i2 < uninv.length; i2++) {
-  var ku = rrar_stableCanonKey(uninv[i2])
-  if (!seen[ku]) {
-   // don’t duplicate invented
-   seen[ku] = true
-   unOut.push(uninv[i2])
-  }
- }
-
- return { inv: invOut, uninv: unOut }
-}
-
-/* -------------------------- prune to targets --------------------------- */
-
-/* Build sets of PRESENT canon keys (for fast membership tests). */
-function rrar_buildCanonKeySet(canon) {
- var set = {}
- var i
- for (i = 0; i < canon.inv.length; i++) set[rrar_stableCanonKey(canon.inv[i])] = true
- for (i = 0; i < canon.uninv.length; i++) set[rrar_stableCanonKey(canon.uninv[i])] = true
- return set
-}
-
-/* Utility to test if an identifier is "protected": in use (rides) or default. */
-function rrar_buildProtectSet(snapshot) {
- var protect = {}
- try {
-  var inUse = RR.gameBridge && RR.gameBridge.detectRidesInUse ? RR.gameBridge.detectRidesInUse() : {}
-  var k
-  for (k in inUse) if (inUse.hasOwnProperty(k)) protect[k] = true
- } catch (e) {}
- // Protect scenery groups that were part of the original selection (don’t unload user’s scenery sets).
- try {
-  var i, it
-  for (i = 0; i < (snapshot.invented || []).length; i++) {
-   it = snapshot.invented[i]
-   if (it && it.type === "scenery" && it.identifier) protect["scenery|" + it.identifier] = true
-  }
-  for (i = 0; i < (snapshot.uninvented || []).length; i++) {
-   it = snapshot.uninvented[i]
-   if (it && it.type === "scenery" && it.identifier) protect["scenery|" + it.identifier] = true
-  }
- } catch (e2) {}
- return protect
-}
-
-/* Choose extras (not in canon, not protected) to unload until <= target. */
-function rrar_pruneLoadedToTargets(targets, canon, snapshot) {
- try {
-  var catalog = RR.catalog && RR.catalog.get ? RR.catalog.get() : {}
-  var protect = rrar_buildProtectSet(snapshot)
-  var canonSet = rrar_buildCanonKeySet(canon)
-
-  // Build loaded lists (by category)
-  var loadedByCat = {}
-  var i
-  for (i = 0; i < RR_AR_CATS.length; i++) loadedByCat[RR_AR_CATS[i]] = []
-
-  // Rides
+  var installed = []
   try {
-   var ridePairs = RR.gameBridge && RR.gameBridge.loadedRidePairs ? RR.gameBridge.loadedRidePairs(catalog) : []
-   var r
-   for (r = 0; r < ridePairs.length; r++) {
-    var rp = ridePairs[r]
-    if (!rp || !rp.identifier || !rp.category) continue
-    if (!loadedByCat[rp.category]) loadedByCat[rp.category] = []
-    loadedByCat[rp.category].push({ type: "ride", identifier: rp.identifier, rideType: rp.rideType, category: rp.category })
-   }
-  } catch (e1) {}
+   installed = objectManager && objectManager.installedObjects ? objectManager.installedObjects : []
+  } catch (_) {
+   installed = []
+  }
 
-  // Scenery groups
-  try {
-   var groups = RR.gameBridge && RR.gameBridge.loadedSceneryGroups ? RR.gameBridge.loadedSceneryGroups(catalog) : []
-   var g
-   for (g = 0; g < groups.length; g++) {
-    var sg = groups[g]
-    if (!sg || !sg.identifier) continue
-    loadedByCat["scenery"].push({ type: "scenery", identifier: sg.identifier, category: "scenery" })
-   }
-  } catch (e2) {}
+  var total = 0
+  var eligible = 0
+  var filteredCustom = 0
+  var filteredNonResearchable = 0
+  var filteredMissingId = 0
+  var filteredNameDup = 0
 
-  // For each category: count non-fixed and unload extras not in canon until we reach the target
-  var cIdx
-  for (cIdx = 0; cIdx < RR_AR_CATS.length; cIdx++) {
-   var cat = RR_AR_CATS[cIdx]
-   var list = loadedByCat[cat] || []
-   var targetRow = targets && targets.perCategory ? targets.perCategory[cat] : null
-   var targetTotal = targetRow && typeof targetRow.targetSelection === "number" ? targetRow.targetSelection : 0
+  var out = []
+  var seenId = {}
+  var seenNameByType = {
+   ride: {},
+   scenery: {},
+  }
 
-   // Build NON-fixed list (exclude default fixed + specials) and mark which are canon
-   var nonFixed = []
-   var i3
-   for (i3 = 0; i3 < list.length; i3++) {
-    var e = list[i3]
-    if (!e || !e.identifier) continue
-    if (rrar_isDefaultFixed(e.identifier)) continue
-    if (rrar_isSpecial(e.identifier)) continue
-    nonFixed.push(e)
-   }
-
-   // If we already have <= target (or no target), nothing to prune.
-   if (nonFixed.length <= targetTotal || targetTotal <= 0) {
+  for (var i = 0; i < installed.length; i++) {
+   var e = installed[i]
+   if (!e) {
     continue
    }
 
-   // Collect unload candidates = non-fixed that are NOT part of canon and NOT protected
-   var extras = []
-   for (i3 = 0; i3 < nonFixed.length; i3++) {
-    var rec = nonFixed[i3]
-    var key = rrar_stableCanonKey(rec)
-    var protTag = rec.type + "|" + rec.identifier
-    if (canonSet[key]) continue
-    if (protect[protTag]) continue
-    extras.push(rec)
+   total++
+
+   var id = e.identifier
+   var t = e.type
+
+   if (!id || !t) {
+    filteredMissingId++
+    continue
    }
 
-   // Unload until we’re at or below target, or no extras left.
-   var needToDrop = nonFixed.length - targetTotal
-   var idx = 0
-   while (needToDrop > 0 && extras.length > 0) {
-    var victim = extras[idx % extras.length] // simple round-robin
-    try {
-     // Physically unload and purge research refs
-     objectManager.unload(victim.identifier)
-    } catch (_ue) {}
-    try {
-     RR.gameBridge && RR.gameBridge.purgeResearchRefsForIdentifierTyped && RR.gameBridge.purgeResearchRefsForIdentifierTyped(victim.type, victim.identifier, protect)
-    } catch (_pe) {}
-    needToDrop--
-    // Remove victim from extras to avoid repeated attempts
-    extras.splice(idx % (extras.length || 1), 1)
-    idx++
-   }
-  }
-
-  // Scrub and normalize after unloading
-  try {
-   if (RR.gameBridge && RR.gameBridge.scrubResearchArrays) RR.gameBridge.scrubResearchArrays()
-   if (RR.gameBridge && RR.gameBridge.sanitizeAndNormalizeResearchLists) RR.gameBridge.sanitizeAndNormalizeResearchLists()
-  } catch (_s) {}
- } catch (eTop) {
-  try {
-   if (console && console.log) console.log("[RR] pruneLoadedToTargets error: " + eTop.message)
-  } catch (_e2) {}
- }
-}
-
-/* ------------------------------ repair -------------------------------- */
-
-function rrar_repairNow(snapshot) {
- try {
-  if (RR && RR.gameBridge) {
-   if (RR.gameBridge.scrubResearchArrays) RR.gameBridge.scrubResearchArrays()
-   if (RR.gameBridge.sanitizeAndNormalizeResearchLists) RR.gameBridge.sanitizeAndNormalizeResearchLists()
-  }
- } catch (e) {
-  try {
-   if (console && console.log) console.log("[RR] repairNow error: " + e.message)
-  } catch (_e2) {}
- }
-}
-
-/* ------------------------------- apply -------------------------------- */
-
-function rrar_apply(opts) {
- var plan = (opts && opts.plan) || { perCategory: {}, specials: { added: [] } }
- var targets = (opts && opts.targets) || null
- var snapshot = (opts && opts.snapshot) || (RR.gameBridge && RR.gameBridge.snapshotResearch ? RR.gameBridge.snapshotResearch() : { invented: [], uninvented: [] })
-
- // 1) Assemble canon (selection + defaults + specials), de-dup with invented priority
- var canon = rrar_assembleCanonFromPlan(plan, snapshot)
-
- // 2) Write canon through bridge (preserve indices when possible)
- try {
-  if (RR.gameBridge && RR.gameBridge.applyRefPreserving) {
-   RR.gameBridge.applyRefPreserving(canon.inv, canon.uninv)
-  }
- } catch (_e1) {}
-
- // 3) Prune loaded extras down to per-category targets (protect defaults / in-use; specials won’t be considered extras)
- try {
-  rrar_pruneLoadedToTargets(targets, canon, snapshot)
- } catch (_e2) {}
-
- // 4) Re-apply canon after unloads to ensure lists only reference loaded objects
- try {
-  if (RR.gameBridge && RR.gameBridge.applyRefPreserving) {
-   RR.gameBridge.applyRefPreserving(canon.inv, canon.uninv)
-  }
- } catch (_e3) {}
-
- // 5) Final safety repair
- rrar_repairNow()
-}
-
-/* ------------------------------ export -------------------------------- */
-
-RR.applyAndRepair = {
- apply: rrar_apply,
- repairNow: rrar_repairNow,
-}
-/* ======================== END MODULE: RR.applyAndRepair ======================== */
-
-/* ==========================================================================
-MODULE: RR.ui  |  Window, widgets, events, and small notifications
-PURPOSE: Shows the control panel (scan, multiplier, checkboxes, randomize),
-         syncs prefs, displays status, and (NEW) asks for confirmation
-         before running Randomize.
-========================================================================== */
-
-var RR = typeof RR !== "undefined" ? RR : {}
-
-var RR_UI_CLASS = "research-randomizer"
-var RR_UI_MULTIPLIERS = [1.0, 1.5, 2.0, 3.0]
-
-var RR_UI_controller = null
-var RR_UI_window = null
-var RR_UI_confirmWindow = null // <— track the confirm window handle
-
-/* helpers */
-function rr_toLocalString(ts) {
- if (!ts) {
-  return "—"
- }
- try {
-  return new Date(ts).toLocaleString()
- } catch (e) {
-  var d = new Date(ts)
-  var pad = function (n) {
-   return (n < 10 ? "0" : "") + n
-  }
-  return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()) + " " + pad(d.getHours()) + ":" + pad(d.getMinutes())
- }
-}
-function rr_uiGetWidget(win, name) {
- if (!win) {
-  return null
- }
- try {
-  if (win.findWidget) {
-   return win.findWidget(name)
-  }
- } catch (e) {}
- try {
-  var i,
-   ws = win.widgets || []
-  for (i = 0; i < ws.length; i++) {
-   if (ws[i].name === name) {
-    return ws[i]
-   }
-  }
- } catch (e2) {}
- return null
-}
-function rr_uiCurrentPrefs() {
- return RR_UI_controller && RR_UI_controller.getPrefs ? RR_UI_controller.getPrefs() : { multiplier: 1.0, guaranteeATM: false, guaranteeInfo: false, excludeCustom: false }
-}
-function rr_indexForMultiplier(val) {
- for (var i = 0; i < RR_UI_MULTIPLIERS.length; i++) {
-  if (RR_UI_MULTIPLIERS[i] === val) {
-   return i
-  }
- }
- return 0
-}
-function rr_readPrefsFromWidgets(win) {
- var dd = rr_uiGetWidget(win, "multiplier")
- var a = rr_uiGetWidget(win, "guaranteeATM")
- var k = rr_uiGetWidget(win, "guaranteeInfo")
- var c = rr_uiGetWidget(win, "excludeCustom")
- var idx = dd ? dd.selectedIndex : 0
- return { multiplier: RR_UI_MULTIPLIERS[idx] || 1.0, guaranteeATM: a ? !!a.isChecked : false, guaranteeInfo: k ? !!k.isChecked : false, excludeCustom: c ? !!c.isChecked : false }
-}
-function rr_savePrefsFromWidgets(win) {
- if (!RR_UI_controller || !RR_UI_controller.onSavePrefs) {
-  return
- }
- var prefs = rr_readPrefsFromWidgets(win)
- RR_UI_controller.onSavePrefs(prefs)
-}
-function rr_applyPrefsToWidgets(win, prefs) {
- var dd = rr_uiGetWidget(win, "multiplier")
- var a = rr_uiGetWidget(win, "guaranteeATM")
- var k = rr_uiGetWidget(win, "guaranteeInfo")
- var c = rr_uiGetWidget(win, "excludeCustom")
- if (dd) {
-  dd.selectedIndex = rr_indexForMultiplier(prefs.multiplier || 1.0)
- }
- if (a) {
-  a.isChecked = !!prefs.guaranteeATM
- }
- if (k) {
-  k.isChecked = !!prefs.guaranteeInfo
- }
- if (c) {
-  c.isChecked = !!prefs.excludeCustom
- }
-}
-function rr_setStatus(win, status) {
- var s1 = rr_uiGetWidget(win, "statusBaseline")
- var s2 = rr_uiGetWidget(win, "statusCatalog")
- if (s1) {
-  s1.text = "Baseline: " + (status && status.hasBaseline ? rr_toLocalString(status.baselineAt) : "—")
- }
- if (s2) {
-  s2.text = "Catalog: " + (status && status.hasCatalog ? rr_toLocalString(status.catalogAt) : "—")
- }
-}
-
-/* --- Confirmation window for Randomize --- */
-function rr_closeConfirmWindow() {
- try {
-  if (RR_UI_confirmWindow && RR_UI_confirmWindow.close) {
-   RR_UI_confirmWindow.close()
-  }
- } catch (_e) {}
- RR_UI_confirmWindow = null
-}
-
-function rr_openRandomizeConfirm() {
- if (typeof ui === "undefined" || !ui || !ui.openWindow) {
-  // Headless / no UI -> run directly
-  return RR_UI_controller && RR_UI_controller.onRandomize ? RR_UI_controller.onRandomize() : undefined
- }
-
- // If one is already open, close it first
- rr_closeConfirmWindow()
-
- // Build new confirm window and keep the handle
- var w = ui.openWindow({
-  classification: "research-randomizer-confirm",
-  width: 320,
-  height: 80,
-  title: "Confirm Randomize",
-  colours: [24, 24, 24],
-  widgets: [
-   { type: "label", x: 12, y: 18, width: 296, height: 14, name: "warn", text: "Warning: game may freeze for several seconds, proceed?" },
-   {
-    type: "button",
-    x: 60,
-    y: 38,
-    width: 80,
-    height: 18,
-    name: "cancel",
-    text: "Cancel",
-    onClick: function () {
-     // Close by handle: robust and immediate
-     rr_closeConfirmWindow()
-    },
-   },
-   {
-    type: "button",
-    x: 160,
-    y: 38,
-    width: 80,
-    height: 18,
-    name: "ok",
-    text: "Proceed",
-    onClick: function () {
-     rr_closeConfirmWindow()
-     if (RR_UI_controller && RR_UI_controller.onRandomize) {
-      RR_UI_controller.onRandomize()
-     }
-    },
-   },
-  ],
-  onClose: function () {
-   // Ensure our handle is cleared even if user closes via [X]
-   RR_UI_confirmWindow = null
-  },
- })
-
- RR_UI_confirmWindow = w
- return w
-}
-
-/* window build/focus */
-function rr_buildWindow() {
- if (typeof ui === "undefined" || !ui || !ui.openWindow) {
-  try {
-   if (console && console.log) {
-    console.log("[RR] UI not available in this build.")
-   }
-  } catch (e) {}
-  return null
- }
-
- var prefs = rr_uiCurrentPrefs()
- var status = RR_UI_controller && RR_UI_controller.getStatus ? RR_UI_controller.getStatus() : null
-
- var win = ui.openWindow({
-  classification: RR_UI_CLASS,
-  width: 330,
-  height: 188,
-  title: "Research Randomizer",
-  colours: [24, 24, 24],
-  widgets: [
-   // Row 1: Multiplier
-   { type: "label", x: 12, y: 22, width: 80, height: 14, text: "Multiplier" },
-   {
-    type: "dropdown",
-    name: "multiplier",
-    x: 90,
-    y: 18,
-    width: 120,
-    height: 14,
-    items: ["1.0x", "1.5x", "2.0x", "3.0x"],
-    selectedIndex: rr_indexForMultiplier(prefs.multiplier || 1.0),
-    onChange: function () {
-     rr_savePrefsFromWidgets(win)
-    },
-   },
-
-   // Row 2: Checkboxes
-   {
-    type: "checkbox",
-    name: "guaranteeATM",
-    x: 12,
-    y: 44,
-    width: 306,
-    height: 14,
-    text: "Guarantee ATM (Cash Machine)",
-    isChecked: !!prefs.guaranteeATM,
-    onChange: function () {
-     rr_savePrefsFromWidgets(win)
-    },
-   },
-   {
-    type: "checkbox",
-    name: "guaranteeInfo",
-    x: 12,
-    y: 60,
-    width: 306,
-    height: 14,
-    text: "Guarantee Info Kiosk",
-    isChecked: !!prefs.guaranteeInfo,
-    onChange: function () {
-     rr_savePrefsFromWidgets(win)
-    },
-   },
-   {
-    type: "checkbox",
-    name: "excludeCustom",
-    x: 12,
-    y: 76,
-    width: 306,
-    height: 14,
-    text: "Exclude custom-source items",
-    isChecked: !!prefs.excludeCustom,
-    onChange: function () {
-     rr_savePrefsFromWidgets(win)
-    },
-   },
-
-   // Row 3: Buttons
-   {
-    type: "button",
-    name: "scanBtn",
-    x: 12,
-    y: 104,
-    width: 120,
-    height: 18,
-    text: "Smart Scan",
-    onClick: function () {
-     if (RR_UI_controller && RR_UI_controller.onScan) {
-      RR_UI_controller.onScan()
-     }
-     if (RR_UI_controller && RR_UI_controller.getStatus) {
-      rr_setStatus(win, RR_UI_controller.getStatus())
-     }
-    },
-   },
-   {
-    type: "button",
-    name: "randomizeBtn",
-    x: 144,
-    y: 104,
-    width: 120,
-    height: 18,
-    text: "Randomize",
-    onClick: function () {
-     // Open confirmation dialog first
-     rr_openRandomizeConfirm()
-     if (RR_UI_controller && RR_UI_controller.getStatus) {
-      rr_setStatus(win, RR_UI_controller.getStatus())
-     }
-    },
-   },
-
-   // Row 4: Status lines
-   { type: "label", name: "statusBaseline", x: 12, y: 134, width: 300, height: 14, text: "Baseline: —" },
-   { type: "label", name: "statusCatalog", x: 12, y: 150, width: 300, height: 14, text: "Catalog: —" },
-  ],
-  onClose: function () {
-   RR_UI_window = null
-  },
- })
-
- rr_applyPrefsToWidgets(win, prefs)
- rr_setStatus(win, status)
- return win
-}
-
-function rr_focusOrOpen() {
- try {
-  if (typeof ui !== "undefined" && ui && ui.getWindow) {
-   var existing = ui.getWindow(RR_UI_CLASS)
-   if (existing) {
-    RR_UI_window = existing
-    existing.bringToFront()
-    if (RR_UI_controller && RR_UI_controller.getStatus) {
-     rr_setStatus(existing, RR_UI_controller.getStatus())
-    }
-    return
-   }
-  }
- } catch (e) {}
- RR_UI_window = rr_buildWindow()
-}
-
-/* public UI API */
-RR.ui = {
- init: function (controller) {
-  RR_UI_controller = controller
- },
- open: function () {
-  rr_focusOrOpen()
- },
- flash: function (text) {
-  try {
-   if (typeof ui !== "undefined" && ui && ui.showError) {
-    ui.showError("Research Randomizer", text)
-   } else if (console && console.log) {
-    console.log("[RR] " + text)
-   }
-  } catch (e) {}
- },
- refreshStatus: function (status) {
-  var w = RR_UI_window
-  if (!w && typeof ui !== "undefined" && ui && ui.getWindow) {
-   w = ui.getWindow(RR_UI_CLASS)
-  }
-  if (w) {
-   rr_setStatus(w, status)
-  }
- },
-}
-/* ================================ END MODULE: RR.ui ================================ */
-
-/* ==========================================================================
-   MODULE: RR.main  |  Orchestrator + plugin entrypoint
-   PURPOSE: Boots the plugin, hooks UI, runs scan/randomize flows, and sets a daily repair guard.
-   ========================================================================== */
-
-/* Global namespace */
-var RR = typeof RR !== "undefined" ? RR : {}
-
-/* Tiny safe wrapper for user-facing errors */
-function rr_safeCall(fn, label) {
- try {
-  return fn()
- } catch (e) {
-  try {
-   if (typeof ui !== "undefined" && ui && ui.showError) {
-    ui.showError("Research Randomizer", (label || "Error") + ": " + e.message)
-   }
-  } catch (_e) {}
-  try {
-   if (typeof console !== "undefined" && console && console.log) {
-    console.log("[RR] " + (label || "Error") + ": " + e.stack)
-   }
-  } catch (_e2) {}
-  return null
- }
-}
-
-/* Main orchestrator */
-RR.main = (function () {
- var started = false
- var lastDailyFixDay = -1
-
- function boot() {
-  if (started) {
-   return
-  }
-  started = true
-
-  rr_safeCall(function () {
-   if (RR.state && RR.state.init) {
-    RR.state.init()
-   }
-  }, "state.init")
-  rr_safeCall(function () {
-   if (RR.ui && RR.ui.init) {
-    RR.ui.init(controller())
-   }
-  }, "ui.init")
-
-  rr_safeCall(function () {
-   if (!RR.gameBridge || !RR.applyAndRepair) {
-    return
-   }
-   var snap = RR.gameBridge.snapshotResearch()
-   RR.applyAndRepair.repairNow(snap)
-  }, "initial repair")
-
-  registerMenu()
-  registerDailyGuard()
- }
-
- function controller() {
-  return {
-   onScan: onScan,
-   onRandomize: onRandomize,
-   onSavePrefs: onSavePrefs,
-   getPrefs: function () {
-    return RR.state && RR.state.getPrefs ? RR.state.getPrefs() : {}
-   },
-   getStatus: getStatus,
-  }
- }
-
- function onSavePrefs(prefs) {
-  rr_safeCall(function () {
-   if (RR.state && RR.state.savePrefs) {
-    RR.state.savePrefs(prefs)
-   }
-  }, "savePrefs")
- }
-
- function getStatus() {
-  var base = RR.state && RR.state.getBaseline ? RR.state.getBaseline() : null
-  var cat = RR.state && RR.state.getCatalogMeta ? RR.state.getCatalogMeta() : null
-  return {
-   hasBaseline: !!base,
-   baselineAt: base ? base.createdAt : null,
-   hasCatalog: !!cat,
-   catalogAt: cat ? cat.createdAt : null,
-   prefs: RR.state && RR.state.getPrefs ? RR.state.getPrefs() : {},
-  }
- }
-
- function onScan() {
-  return rr_safeCall(function () {
-   if (!RR.gameBridge || !RR.catalog) {
-    return
-   }
-   var prefs = RR.state && RR.state.getPrefs ? RR.state.getPrefs() : {}
-   var snap = RR.gameBridge.snapshotResearch()
-   RR.catalog.runSmartScan({
-    snapshot: snap,
-    excludeCustom: !!prefs.excludeCustom,
-   })
-   if (RR.ui && RR.ui.flash) {
-    RR.ui.flash("Scan complete.")
-   }
-  }, "scan")
- }
-
- function onRandomize() {
-  return rr_safeCall(function () {
-   if (!RR.gameBridge || !RR.baselineTargets || !RR.catalog || !RR.poolsAndFilters || !RR.selectionRules || !RR.applyAndRepair) {
-    return
+   // Only rides and scenery groups participate in research.
+   if (t !== "ride" && t !== "scenery_group") {
+    filteredNonResearchable++
+    continue
    }
 
-   var prefs = RR.state && RR.state.getPrefs ? RR.state.getPrefs() : {}
-
-   var snap = RR.gameBridge.snapshotResearch()
-   RR.baselineTargets.ensureBaseline({ snapshot: snap })
-
-   RR.catalog.ensureReady({
-    snapshot: snap,
-    excludeCustom: !!prefs.excludeCustom,
-   })
-
-   var targets = RR.baselineTargets.computeTargets({
-    multiplier: prefs.multiplier,
-   })
-
-   var inUse = RR.gameBridge.detectRidesInUse()
-
-   var pools = RR.poolsAndFilters.build({
-    snapshot: snap,
-    inUse: inUse,
-    excludeCustom: !!prefs.excludeCustom,
-   })
-
-   var plan = RR.selectionRules.select({
-    pools: pools,
-    targets: targets,
-    guaranteeATM: !!prefs.guaranteeATM,
-    guaranteeInfo: !!prefs.guaranteeInfo,
-   })
-
-   RR.applyAndRepair.apply({
-    plan: plan,
-    targets: targets,
-    snapshot: snap,
-   })
-
-   if (RR.ui && RR.ui.flash) {
-    RR.ui.flash("Randomization complete.")
+   var isCust = _isCustomSource(e.sourceGames)
+   if (excludeCustom && isCust) {
+    filteredCustom++
+    continue
    }
-   if (RR.ui && RR.ui.refreshStatus) {
-    RR.ui.refreshStatus(getStatus())
-   }
-  }, "randomize")
- }
 
- function registerMenu() {
-  try {
-   if (typeof ui !== "undefined" && ui && ui.registerMenuItem) {
-    ui.registerMenuItem("Research Randomizer", function () {
-     if (RR.ui && RR.ui.open) {
-      RR.ui.open()
-     }
-    })
+   if (seenId[id]) {
+    // Identifier-level dedupe.
+    continue
    }
-  } catch (e) {}
- }
 
- function registerDailyGuard() {
-  try {
-   if (typeof context !== "undefined" && context && context.subscribe) {
-    var daily = function () {
-     try {
-      var day = typeof date !== "undefined" && date ? date.day : -1
-      if (day !== lastDailyFixDay && day !== -1) {
-       lastDailyFixDay = day
-       if (RR.gameBridge && RR.applyAndRepair) {
-        var snap = RR.gameBridge.snapshotResearch()
-        RR.applyAndRepair.repairNow(snap)
-       }
-      }
-     } catch (e) {}
-    }
-    try {
-     context.subscribe("interval.day", daily)
-    } catch (_a) {}
-    try {
-     context.subscribe("interval.tick", function () {
-      daily()
-     })
-    } catch (_b) {}
-   }
-  } catch (e) {
+   var canonicalType = t === "ride" ? "ride" : "scenery"
+
+   // Global exact-name dedupe per type (ride/scenery), based on player-visible name.
+   // We resolve the name once via objectManager.load(identifier).
+   var nameLower = null
    try {
-    if (console && console.log) {
-     console.log("[RR] Daily guard not registered: " + e.message)
+    if (typeof objectManager !== "undefined" && objectManager && objectManager.load) {
+     var lo = objectManager.load(id)
+     if (lo && lo.name) {
+      nameLower = _asciiLower(lo.name)
+     }
     }
-   } catch (_e) {}
+   } catch (_) {
+    nameLower = null
+   }
+
+   if (nameLower) {
+    var nameMap = canonicalType === "ride" ? seenNameByType.ride : seenNameByType.scenery
+    if (nameMap[nameLower]) {
+     // Another object of the same type with the exact same player-visible name:
+     // treat as a duplicate and keep only the first one.
+     filteredNameDup++
+     continue
+    }
+    nameMap[nameLower] = true
+   }
+
+   seenId[id] = true
+
+   out.push({
+    type: canonicalType,
+    identifier: id,
+   })
+   eligible++
+  }
+
+  // Verbose-only log; RR.log.info is already gated by verbose flag.
+  RR.log.info(
+   "[Catalog] installed=" +
+    total +
+    ", eligible=" +
+    eligible +
+    " (filteredCustom=" +
+    filteredCustom +
+    ", filteredNonResearchable=" +
+    filteredNonResearchable +
+    ", filteredMissingId=" +
+    filteredMissingId +
+    ", filteredNameDup=" +
+    filteredNameDup +
+    ")."
+  )
+
+  // Each entry is { type:"ride"|"scenery", identifier:string }
+  return out
+ }
+
+ return {
+  buildMaster: buildMaster,
+ }
+})()
+/* ============= End of RR.catalog.core ============= */
+
+/** ==================================================
+ * Module: RR.research.build.core
+ * Purpose: Build deduped ResearchItem arrays from identities using current loaded indices.
+ * Exports: RR.researchBuild
+ * Imports: RR.helper
+ * Version: 3.0.0-alpha.3   Since: 2025-11-15
+ * =================================================== */
+var RR = RR || {}
+RR.researchBuild = (function () {
+ function _mapRide(id) {
+  try {
+   var caches = RR.helper && RR.helper.getIndexCaches ? RR.helper.getIndexCaches() : null
+   var rideIdx = caches && caches.rideIndexById ? caches.rideIndexById[id] : null
+   if (typeof rideIdx !== "number") {
+    return null
+   }
+   var ro = objectManager.getObject("ride", rideIdx)
+   if (!ro) {
+    return null
+   }
+   var rt = ro.rideType && ro.rideType.length ? ro.rideType[0] : null
+   if (typeof rt === "number") {
+    return {
+     object: rideIdx,
+     rideType: rt,
+    }
+   }
+  } catch (_) {}
+  return null
+ }
+
+ function _mapScenery(id) {
+  try {
+   var caches = RR.helper && RR.helper.getIndexCaches ? RR.helper.getIndexCaches() : null
+   var idx = caches && caches.groupIndexById ? caches.groupIndexById[id] : null
+   if (typeof idx === "number") {
+    return {
+     object: idx,
+    }
+   }
+  } catch (_) {}
+  return null
+ }
+
+ function _key(it) {
+  return it.type === "ride" ? "ride|" + it.rideType + "|" + it.object : "scenery|" + it.object
+ }
+
+ function buildFromIdentities(curIDs, resIDs) {
+  var seen = {}
+  var cur = []
+  var res = []
+
+  function push(dst, ident) {
+   var m
+   if (ident.type === "ride") {
+    m = _mapRide(ident.identifier)
+   } else {
+    m = _mapScenery(ident.identifier)
+   }
+   if (!m) {
+    return
+   }
+
+   var entry
+   if (ident.type === "ride") {
+    entry = {
+     type: "ride",
+     rideType: m.rideType,
+     object: m.object,
+    }
+   } else {
+    entry = {
+     type: "scenery",
+     object: m.object,
+    }
+   }
+
+   var k = _key(entry)
+   if (seen[k]) {
+    return
+   }
+   seen[k] = true
+   dst.push(entry)
+  }
+
+  for (var i = 0; i < curIDs.length; i++) {
+   push(cur, curIDs[i])
+  }
+  for (var j = 0; j < resIDs.length; j++) {
+   push(res, resIDs[j])
+  }
+
+  return {
+   cur: cur,
+   res: res,
   }
  }
 
  return {
-  boot: boot,
-  runRandomizeForTests: onRandomize,
+  buildFromIdentities: buildFromIdentities,
  }
 })()
+/* ============= End of RR.research.build.core ============= */
 
-function main() {
- if (RR && RR.main && RR.main.boot) {
-  RR.main.boot()
+/** ==================================================
+ * Module: RR.stats.core
+ * Purpose: Verbose-gated per-category counts (normal/special) for CURRENT and RESEARCH, plus totals for current/research/loaded.
+ * Exports: RR.stats
+ * Imports: RR.log, RR.randomSpecial, RR.specialCases, RR.state, RR.helper, RR.randomCore
+ * Version: 3.0.0-alpha.8   Since: 2025-11-15
+ * =================================================== */
+var RR = RR || {}
+RR.stats = (function () {
+ // Canonical order for log output; matches plugin bible categories
+ var ORDER = ["transport", "gentle", "rollercoaster", "thrill", "water", "shop", "scenery"]
+
+ function _zeros() {
+  return RR.randomCore.zeros()
  }
-}
 
+ function _asciiLower(s) {
+  return RR.helper.asciiLower(s)
+ }
+
+ // -------- Essential filtering for stats --------
+
+ function _essentialModeForKey(key) {
+  return RR.helper.getEssentialModeForKey(key)
+ }
+
+ // Return "ignore" | "researchable" | "start" for an essential item,
+ // or null if the item is not one of the essential types.
+ function _essentialModeForItem(it) {
+  if (!it || it.type !== "ride" || typeof it.object !== "number") {
+   return null
+  }
+  try {
+   if (typeof objectManager === "undefined" || !objectManager || !RR.specialCases || !RR.specialCases.classifyRideObject) {
+    return null
+   }
+   var ro = objectManager.getObject("ride", it.object)
+   if (!ro) {
+    return null
+   }
+   var key = RR.specialCases.classifyRideObject(ro) // "info" | "cash" | "firstAid" | null
+   if (!key) {
+    return null
+   }
+   return _essentialModeForKey(key)
+  } catch (_) {
+   return null
+  }
+ }
+
+ // Should this item be excluded from stats entirely?
+ // We exclude essential items when mode is "start" or "researchable".
+ // When mode is "ignore", they behave like normal and are counted.
+ function _excludeFromStats(it) {
+  var mode = _essentialModeForItem(it)
+  if (!mode) {
+   return false
+  }
+  // Only include them in stats when the user chose "Ignore".
+  return mode === "start" || mode === "researchable"
+ }
+
+ // Make a shallow copy of list with all "excluded-from-stats" items removed.
+ function _filterForStats(list) {
+  if (!list || !list.length) {
+   return []
+  }
+  var out = []
+  for (var i = 0; i < list.length; i++) {
+   var it = list[i]
+   if (!it) {
+    continue
+   }
+   if (_excludeFromStats(it)) {
+    continue
+   }
+   out.push(it)
+  }
+  return out
+ }
+
+ // -------- Logical-key helper for stats --------
+
+ function _logicalKeyForStatsItem(it) {
+  if (!it || typeof it.object !== "number") {
+   return null
+  }
+
+  var type = it.type || "ride"
+
+  if (type === "ride") {
+   try {
+    if (typeof objectManager !== "undefined" && objectManager && objectManager.getObject) {
+     var ro = objectManager.getObject("ride", it.object)
+     if (ro) {
+      var nameLower = _asciiLower(ro.name || "")
+      var rt = typeof it.rideType === "number" ? it.rideType : null
+      if (rt === null && ro.rideType && ro.rideType.length) {
+       rt = ro.rideType[0]
+      }
+      if (rt === null || typeof rt !== "number") {
+       return "ride|" + nameLower + "|obj:" + it.object
+      }
+      return "ride|" + rt + "|" + nameLower
+     }
+    }
+   } catch (_) {
+    // fall through
+   }
+   return "ride|obj:" + it.object
+  }
+
+  if (type === "scenery") {
+   try {
+    if (typeof objectManager !== "undefined" && objectManager && objectManager.getObject) {
+     var sg = objectManager.getObject("scenery_group", it.object)
+     if (sg) {
+      var gNameLower = _asciiLower(sg.name || "")
+      return "scenery|" + gNameLower
+     }
+    }
+   } catch (_) {
+    // fall through
+   }
+   return "scenery|obj:" + it.object
+  }
+
+  return String(type) + "|obj:" + it.object
+ }
+
+ // -------- Category resolution & tallies --------
+
+ function _resolveCategory(it) {
+  return RR.helper.categoryFromItem(it)
+ }
+
+ // Tally list into an existing accumulator map, with logical de-dup.
+ function _tallyInto(list, acc, seen) {
+  if (!list || !acc) {
+   return acc
+  }
+  if (!seen) {
+   seen = {}
+  }
+
+  for (var i = 0; i < list.length; i++) {
+   var it = list[i]
+   if (!it) {
+    continue
+   }
+
+   var key = _logicalKeyForStatsItem(it)
+   if (key && seen[key]) {
+    // Already counted this logical invention.
+    continue
+   }
+   if (key) {
+    seen[key] = true
+   }
+
+   var cat = _resolveCategory(it)
+   if (!acc.hasOwnProperty(cat)) {
+    cat = "rollercoaster"
+   }
+   acc[cat] = (acc[cat] || 0) + 1
+   acc.total++
+  }
+  return acc
+ }
+
+ // Use the same special-splitting logic as the randomizer, so accounting matches behavior.
+ // Logical de-dup is applied ACROSS normal + special for each list
+ function _tallyWithSpecial(list) {
+  var normal = _zeros()
+  var special = _zeros()
+
+  if (!list || !list.length) {
+   return { normal: normal, special: special }
+  }
+
+  var split = RR.randomSpecial.splitBySpecial(list)
+
+  var seen = {}
+  _tallyInto(split.rand, normal, seen)
+  _tallyInto(split.keep, special, seen)
+  return { normal: normal, special: special }
+ }
+
+ function _formatPair(label, pair) {
+  var n = pair.normal
+  var s = pair.special
+
+  return (
+   label +
+   ": transport=" +
+   n.transport +
+   "/" +
+   s.transport +
+   ", gentle=" +
+   n.gentle +
+   "/" +
+   s.gentle +
+   ", rollercoaster=" +
+   n.rollercoaster +
+   "/" +
+   s.rollercoaster +
+   ", thrill=" +
+   n.thrill +
+   "/" +
+   s.thrill +
+   ", water=" +
+   n.water +
+   "/" +
+   s.water +
+   ", shop=" +
+   n.shop +
+   "/" +
+   s.shop +
+   ", scenery=" +
+   n.scenery +
+   "/" +
+   s.scenery +
+   " | total=" +
+   n.total +
+   "/" +
+   s.total
+  )
+ }
+
+ function _emit(line) {
+  if (RR.state && RR.state.options && RR.state.options.verboseLogging) {
+   RR.log.info(line)
+  }
+ }
+
+ /**
+  * Log BEFORE/AFTER stats for:
+  *  - CURRENT (inventedItems), per category, normal/special
+  *  - RESEARCH (uninventedItems), per category, normal/special
+  *  - Totals (current, research, loaded)
+  *
+  * Essential items in Start/Researchable modes are excluded from all counts.
+  * Logical duplicates (same invention key) are only counted once.
+  */
+ function logBeforeAfter(curBeforeArr, curAfterArr, resBeforeArr, resAfterArr) {
+  curBeforeArr = curBeforeArr || []
+  curAfterArr = curAfterArr || []
+  resBeforeArr = resBeforeArr || []
+  resAfterArr = resAfterArr || []
+
+  // Filter out essentials in Start/Researchable modes for stats symmetry.
+  var curBefore = _filterForStats(curBeforeArr)
+  var curAfter = _filterForStats(curAfterArr)
+  var resBefore = _filterForStats(resBeforeArr)
+  var resAfter = _filterForStats(resAfterArr)
+
+  // Category counts for CURRENT (normal/special).
+  var curBeforePair = _tallyWithSpecial(curBefore)
+  var curAfterPair = _tallyWithSpecial(curAfter)
+
+  // Category counts for RESEARCH (normal/special).
+  var resBeforePair = _tallyWithSpecial(resBefore)
+  var resAfterPair = _tallyWithSpecial(resAfter)
+
+  // Totals: use the deduped tallies, not raw list lengths, so that exact-name
+  // / logical duplicates (Pegasus Cars, Bumper Boats, etc.) don't inflate counts.
+  var totalsBefore = {
+   cur: curBeforePair.normal.total + curBeforePair.special.total,
+   res: resBeforePair.normal.total + resBeforePair.special.total,
+   load: curBeforePair.normal.total + curBeforePair.special.total + resBeforePair.normal.total + resBeforePair.special.total,
+  }
+  var totalsAfter = {
+   cur: curAfterPair.normal.total + curAfterPair.special.total,
+   res: resAfterPair.normal.total + resAfterPair.special.total,
+   load: curAfterPair.normal.total + curAfterPair.special.total + resAfterPair.normal.total + resAfterPair.special.total,
+  }
+
+  // CURRENT diagnostics.
+  _emit(_formatPair("Category count (current BEFORE)", curBeforePair))
+  _emit(_formatPair("Category count (current AFTER)", curAfterPair))
+
+  // RESEARCH diagnostics.
+  _emit(_formatPair("Category count (research BEFORE)", resBeforePair))
+  _emit(_formatPair("Category count (research AFTER)", resAfterPair))
+
+  // Totals.
+  _emit("Totals BEFORE: current=" + totalsBefore.cur + ", research=" + totalsBefore.res + ", loaded=" + totalsBefore.load)
+  _emit("Totals AFTER: current=" + totalsAfter.cur + ", research=" + totalsAfter.res + ", loaded=" + totalsAfter.load)
+ }
+
+ return {
+  logBeforeAfter: logBeforeAfter,
+ }
+})()
+/* ============= End of RR.stats.core ============= */
+
+/** ==================================================
+ * Module: RR.timing.defer
+ * Purpose: Defer a task until a window BEFORE the next day tick (default 16 ticks early).
+ * Exports: RR.defer.armPreDayOnce, RR.defer.isArmed
+ * Imports: RR.log
+ * Version: 3.0.0-alpha.3   Since: 2025-11-15
+ * =================================================== */
+var RR = RR || {}
+RR.defer = (function () {
+ var _subTick = null
+ var _subDay = null
+ var _armed = false
+
+ function _dispose() {
+  // Dispose subscriptions and clear latch.
+  try {
+   if (_subTick && _subTick.dispose) {
+    _subTick.dispose()
+   }
+  } catch (_) {}
+  try {
+   if (_subDay && _subDay.dispose) {
+    _subDay.dispose()
+   }
+  } catch (_) {}
+
+  _subTick = null
+  _subDay = null
+  _armed = false
+ }
+
+ function _nextDayBoundary(mp, day) {
+  var current = Math.floor(((day - 1) * 65536) / 31)
+  var next = Math.floor((day * 65536) / 31)
+  return next > current ? next : 65536
+ }
+
+ function armPreDayOnce(label, fn, marginTicks) {
+  if (!context || typeof context.subscribe !== "function") {
+   RR.log.warn("PreDay: subscribe unavailable.")
+   return false
+  }
+
+  // Cancel any previous pending deferral so this call "wins".
+  _dispose()
+
+  var name = label || "PreDay"
+  var margin = typeof marginTicks === "number" && marginTicks > 0 ? marginTicks : 16
+
+  _subDay = context.subscribe("interval.day", function () {
+   // Day advanced; clean up any remaining tick subscription and clear latch.
+   _dispose()
+   RR.log.info(name + ": day advanced; latch cleared.")
+  })
+
+  _subTick = context.subscribe("interval.tick", function () {
+   try {
+    var mp = date.monthProgress
+    var d = date.day
+    var boundary = _nextDayBoundary(mp, d)
+    var threshold = boundary - 4 * margin // 4 units per tick
+
+    if (mp >= threshold) {
+     RR.log.info(name + ": firing pre-day (mp=" + mp + ", boundary=" + boundary + ", day=" + d + ", marginTicks=" + margin + ").")
+     try {
+      if (fn) {
+       fn()
+      }
+     } catch (e) {
+      RR.log.error(name + " callback failed: " + e)
+     }
+
+     // This deferral has done its job; stop listening to ticks.
+     try {
+      if (_subTick && _subTick.dispose) {
+       _subTick.dispose()
+      }
+     } catch (_) {}
+     _subTick = null
+    }
+   } catch (e) {
+    RR.log.warn("PreDay tick handler error: " + e)
+   }
+  })
+
+  _armed = true
+  RR.log.info(name + ": armed; waiting for pre-day window.")
+  return true
+ }
+
+ // Expose read-only latch state so callers can detect cooldown.
+ function isArmed() {
+  return _armed
+ }
+
+ return { armPreDayOnce: armPreDayOnce, isArmed: isArmed }
+})()
+/* ============= End of RR.timing.defer ============= */
+
+/** ==================================================
+ * Module: RR.random.core
+ * Purpose: RNG and per-category planning helpers shared by randomization.
+ * Exports: RR.randomCore
+ * Imports: RR.category, RR.helper, objectManager
+ * Version: 3.0.0-alpha.9   Since: 2025-11-15
+ * =================================================== */
+var RR = RR || {}
+RR.randomCore = (function () {
+ // Canonical category order; shared between planner and core.
+ var ORDER = ["transport", "gentle", "rollercoaster", "thrill", "water", "shop", "scenery"]
+
+ // Precomputed order index for deterministic tie-breaking.
+ var ORDER_INDEX = {}
+ for (var oi = 0; oi < ORDER.length; oi++) {
+  ORDER_INDEX[ORDER[oi]] = oi
+ }
+
+ // Simple LCG RNG (same as old makeRng).
+ function makeRng(seed) {
+  var s = seed >>> 0 || 1
+  return function (n) {
+   s = (Math.imul(1664525, s) + 1013904223) >>> 0
+   return n > 0 ? s % n : 0
+  }
+ }
+
+ // Zeroed category count map.
+ function zeros() {
+  var o = {}
+  for (var i = 0; i < ORDER.length; i++) {
+   o[ORDER[i]] = 0
+  }
+  o.total = 0
+  return o
+ }
+
+ // Category resolution helper for planner-side accounting.
+ function _resolveCategoryFromItem(it) {
+  return RR.helper.categoryFromItem(it)
+ }
+
+ // Category tally helper: derive category from item.
+ function tallyFromList(list) {
+  var c = zeros()
+  if (!list) {
+   return c
+  }
+
+  for (var i = 0; i < list.length; i++) {
+   var it = list[i]
+   if (!it) {
+    continue
+   }
+
+   var cat = _resolveCategoryFromItem(it)
+   if (!c.hasOwnProperty(cat)) {
+    cat = "rollercoaster"
+   }
+
+   c[cat] = (c[cat] || 0) + 1
+   c.total++
+  }
+
+  return c
+ }
+
+ // Derive weights (per-category ratios) from current / research / loaded counts.
+ function weightsFrom(cur, res, load) {
+  var base = res && res.total > 0 ? res : load && load.total > 0 ? load : cur && cur.total > 0 ? cur : null
+  var w = {}
+  var i
+
+  if (base) {
+   for (i = 0; i < ORDER.length; i++) {
+    var c = ORDER[i]
+    w[c] = base.total > 0 ? (base[c] || 0) / base.total : 0
+   }
+  } else {
+   for (i = 0; i < ORDER.length; i++) {
+    w[ORDER[i]] = 1.0 / ORDER.length
+   }
+  }
+  return w
+ }
+
+ /**
+  * Split a total into integer per-category counts based on weights, with
+  * remainder assigned by largest fractional part. Tie-breaking is deterministic
+  * by ORDER so the mapping is stable and pre-determined.
+  */
+ function apportion(totalAdd, weights) {
+  var adds = {}
+  var rema = []
+  var sum = 0
+  var i
+
+  for (i = 0; i < ORDER.length; i++) {
+   var cat = ORDER[i]
+   var share = totalAdd * (weights[cat] || 0)
+   var base = Math.floor(share)
+   adds[cat] = base
+   sum += base
+   rema.push({
+    cat: cat,
+    frac: share - base,
+    orderIndex: ORDER_INDEX[cat],
+   })
+  }
+
+  var left = totalAdd - sum
+
+  // Deterministic sort: primary key = frac desc, secondary = ORDER index asc.
+  rema.sort(function (a, b) {
+   if (b.frac !== a.frac) {
+    return b.frac - a.frac
+   }
+   var ai = typeof a.orderIndex === "number" ? a.orderIndex : 0
+   var bi = typeof b.orderIndex === "number" ? b.orderIndex : 0
+   return ai - bi
+  })
+
+  for (i = 0; i < rema.length && left > 0; i++) {
+   adds[rema[i].cat]++
+   left--
+  }
+  return adds
+ }
+
+ function activeCats(cur, load) {
+  var act = []
+  var i
+
+  // Primary: categories present in the baseline candidate pool.
+  if (load) {
+   for (i = 0; i < ORDER.length; i++) {
+    if ((load[ORDER[i]] || 0) > 0) {
+     act.push(ORDER[i])
+    }
+   }
+  }
+
+  // Fallback: if baseline was empty, fall back to current randomizable counts.
+  if (!act.length && cur) {
+   for (i = 0; i < ORDER.length; i++) {
+    if ((cur[ORDER[i]] || 0) > 0) {
+     act.push(ORDER[i])
+    }
+   }
+  }
+
+  // Fallback: if still empty, use all categories.
+  if (!act.length) {
+   for (i = 0; i < ORDER.length; i++) {
+    act.push(ORDER[i])
+   }
+  }
+
+  // Ensure scenery present.
+  var has = false
+  for (i = 0; i < act.length; i++) {
+   if (act[i] === "scenery") {
+    has = true
+    break
+   }
+  }
+  if (!has) {
+   act.push("scenery")
+  }
+  return act
+ }
+
+ // Even split of a total across a subset of categories.
+ function evenSplit(total, active) {
+  var out = zeros()
+  if (!active || !active.length) {
+   out.total = 0
+   return out
+  }
+
+  var base = Math.floor(total / active.length)
+  var rem = total - base * active.length
+
+  for (var i = 0; i < ORDER.length; i++) {
+   var cat = ORDER[i]
+   var isAct = false
+   for (var j = 0; j < active.length; j++) {
+    if (active[j] === cat) {
+     isAct = true
+     break
+    }
+   }
+   if (!isAct) {
+    out[cat] = 0
+    continue
+   }
+
+   var add = base
+   if (rem > 0) {
+    add++
+    rem--
+   }
+   out[cat] = add
+   out.total += add
+  }
+  return out
+ }
+
+ return {
+  ORDER: ORDER,
+  makeRng: makeRng,
+  zeros: zeros,
+  tallyFromList: tallyFromList,
+  weightsFrom: weightsFrom,
+  apportion: apportion,
+  activeCats: activeCats,
+  evenSplit: evenSplit,
+ }
+})()
+/* ============= End of RR.random.core ============= */
+
+/** ==================================================
+ * Module: RR.category.core
+ * Purpose: Derive research categories from rideType using a learned mapping from existing research lists.
+ * Exports: RR.category
+ * Imports: RR.randomCore, (global park, objectManager)
+ * Version: 3.0.0-alpha.0   Since: 2025-11-14
+ * =================================================== */
+var RR = RR || {}
+RR.category = (function () {
+ // Canonical order; reuse from randomCore if present.
+ var ORDER = RR.randomCore && RR.randomCore.ORDER ? RR.randomCore.ORDER : ["transport", "gentle", "rollercoaster", "thrill", "water", "shop", "scenery"]
+
+ // Internal mapping: rideType (number) -> category string.
+ var _rideTypeToCategory = {}
+ var _warmed = false
+
+ function _isValidCategory(cat) {
+  if (!cat) {
+   return false
+  }
+  for (var i = 0; i < ORDER.length; i++) {
+   if (ORDER[i] === cat) {
+    return true
+   }
+  }
+  return false
+ }
+
+ // Try to read a category from a ResearchItem that already has one,
+ // and fall back to any future rideObject.category if it ever exists.
+ function _categoryFromResearchItem(it) {
+  if (!it) {
+   return null
+  }
+
+  // Primary: explicit category on the ResearchItem (set by the game).
+  if (it.category && _isValidCategory(it.category)) {
+   return it.category
+  }
+
+  // Fallback: try to see if the ride object exposes a category field in future APIs.
+  if (it.type === "ride" && typeof it.object === "number") {
+   try {
+    var ro = objectManager.getObject("ride", it.object)
+    if (ro && ro.category && _isValidCategory(ro.category)) {
+     return ro.category
+    }
+   } catch (_) {}
+  }
+
+  return null
+ }
+
+ // Warm the rideType -> category mapping from current research lists.
+ function warmFromResearch(cur, res) {
+  _rideTypeToCategory = {}
+  _warmed = true
+
+  function scan(list) {
+   if (!list || !list.length) {
+    return
+   }
+   for (var i = 0; i < list.length; i++) {
+    var it = list[i]
+    if (!it || it.type !== "ride") {
+     continue
+    }
+
+    var cat = _categoryFromResearchItem(it)
+    if (!_isValidCategory(cat)) {
+     continue
+    }
+
+    // Prefer a direct rideType from the ResearchItem.
+    var rt = typeof it.rideType === "number" ? it.rideType : null
+
+    // If missing, fall back to the ride object definition.
+    if (rt === null && typeof it.object === "number") {
+     try {
+      var ro = objectManager.getObject("ride", it.object)
+      if (ro && ro.rideType && ro.rideType.length) {
+       rt = ro.rideType[0]
+      }
+     } catch (_) {}
+    }
+
+    if (typeof rt !== "number") {
+     continue
+    }
+
+    // First category seen per rideType wins; all variants of a family share a category.
+    if (!_rideTypeToCategory.hasOwnProperty(rt)) {
+     _rideTypeToCategory[rt] = cat
+    }
+   }
+  }
+
+  scan(cur)
+  scan(res)
+ }
+
+ // Lazily warm from park.research if not explicitly warmed.
+ function _ensureWarmed() {
+  if (_warmed) {
+   return
+  }
+
+  try {
+   var cur = park && park.research && park.research.inventedItems ? park.research.inventedItems : []
+   var res = park && park.research && park.research.uninventedItems ? park.research.uninventedItems : []
+   warmFromResearch(cur, res)
+  } catch (_) {
+   _rideTypeToCategory = {}
+   _warmed = true
+  }
+ }
+
+ function fromRideType(rideType) {
+  _ensureWarmed()
+  var rt = typeof rideType === "number" ? rideType : null
+  if (rt === null) {
+   return "rollercoaster"
+  }
+  var cat = _rideTypeToCategory[rt]
+  if (_isValidCategory(cat)) {
+   return cat
+  }
+  return "rollercoaster"
+ }
+
+ function fromRideObjectIndex(index) {
+  if (typeof index !== "number") {
+   return "rollercoaster"
+  }
+  var rt = null
+  try {
+   var ro = objectManager.getObject("ride", index)
+   if (ro && ro.rideType && ro.rideType.length) {
+    rt = ro.rideType[0]
+   }
+  } catch (_) {}
+  return fromRideType(rt)
+ }
+
+ // Generic helper for ResearchItem-like entries.
+ function fromItem(it) {
+  if (!it) {
+   return "rollercoaster"
+  }
+  if (it.type !== "ride") {
+   // Everything non-ride collapses into scenery for our purposes.
+   return "scenery"
+  }
+
+  // If the item itself already has a valid category, honour it.
+  if (it.category && _isValidCategory(it.category)) {
+   return it.category
+  }
+
+  // Next, prefer rideType on the item.
+  if (typeof it.rideType === "number") {
+   return fromRideType(it.rideType)
+  }
+
+  // Finally, fall back to the ride object definition.
+  if (typeof it.object === "number") {
+   return fromRideObjectIndex(it.object)
+  }
+
+  return "rollercoaster"
+ }
+
+ return {
+  warmFromResearch: warmFromResearch,
+  fromRideType: fromRideType,
+  fromRideObjectIndex: fromRideObjectIndex,
+  fromItem: fromItem,
+ }
+})()
+/* ============= End of RR.category.core ============= */
+
+/** ==================================================
+ * Module: RR.random.special
+ * Purpose: Detect default/essential/in-use items and split ResearchItem lists into special vs randomizable.
+ * Exports: RR.randomSpecial
+ * Imports: RR.specialCases, RR.state, RR.helper
+ * Version: 3.0.0-alpha.5   Since: 2025-11-15
+ * =================================================== */
+var RR = RR || {}
+RR.randomSpecial = (function () {
+ function _scanUsedRideObjectIndices() {
+  return RR.helper && RR.helper.scanRideObjectIndices ? RR.helper.scanRideObjectIndices() : {}
+ }
+
+ function _scanUsedSceneryIdentifiers() {
+  return RR.helper && RR.helper.scanSceneryIdentifiers ? RR.helper.scanSceneryIdentifiers() : {}
+ }
+
+ function _computeUsedSceneryGroupIndices(usedSceneryIdentifiers) {
+  return RR.helper && RR.helper.computeSceneryGroupIndices ? RR.helper.computeSceneryGroupIndices(usedSceneryIdentifiers) : {}
+ }
+
+ function splitBySpecial(list, usage) {
+  var keep = []
+  var rand = []
+
+  // Ensure default/essential name-dedup is scoped to this split call.
+  if (RR.specialCases && RR.specialCases.resetSeen) {
+   RR.specialCases.resetSeen()
+  }
+
+  if (!list || !list.length) {
+   return { keep: keep, rand: rand }
+  }
+
+  var usedRideIdx
+  var usedGroupIdx
+
+  if (usage && usage.usedRideIdx && usage.usedGroupIdx) {
+   // Reuse shared snapshot provided by caller.
+   usedRideIdx = usage.usedRideIdx
+   usedGroupIdx = usage.usedGroupIdx
+  } else {
+   // Scan usage once per call so built items are treated as special.
+   var usedSceneryIds = _scanUsedSceneryIdentifiers()
+   usedRideIdx = _scanUsedRideObjectIndices()
+   usedGroupIdx = _computeUsedSceneryGroupIndices(usedSceneryIds)
+  }
+
+  for (var i = 0; i < list.length; i++) {
+   var it = list[i]
+   if (!it) {
+    continue
+   }
+
+   var tag = null
+   try {
+    if (RR.specialCases && RR.specialCases.tagItem) {
+     tag = RR.specialCases.tagItem(it) // "default" | "essential" | null
+    }
+   } catch (_) {
+    tag = null
+   }
+
+   var isSpecial = false
+
+   if (tag === "default" || tag === "essential") {
+    isSpecial = true
+   } else if (it.type === "ride" && typeof it.object === "number" && usedRideIdx[it.object]) {
+    // Any ride whose object index is actually used in the park is treated as special.
+    isSpecial = true
+   } else if (it.type === "scenery" && typeof it.object === "number" && usedGroupIdx[it.object]) {
+    // Any scenery group that has pieces in the map is treated as special.
+    isSpecial = true
+   }
+
+   if (isSpecial) {
+    keep.push(it)
+   } else {
+    rand.push(it)
+   }
+  }
+
+  return { keep: keep, rand: rand }
+ }
+
+ return {
+  splitBySpecial: splitBySpecial,
+ }
+})()
+/* ============= End of RR.random.special ============= */
+
+/** ==================================================
+ * Module: RR.essential.core
+ * Purpose: Apply per-essential-item modes (Ignore / Researchable / Start with) to final research lists.
+ * Exports: RR.essential
+ * Imports: RR.state, RR.specialCases, RR.helper
+ * Version: 3.0.0-alpha.3   Since: 2025-11-15
+ * =================================================== */
+var RR = RR || {}
+RR.essential = (function () {
+ var KEYS = ["info", "cash", "firstAid"]
+
+ // Map a ResearchItem -> essential key (info|cash|firstAid) or null.
+ function _classifyItem(it) {
+  if (!it || it.type !== "ride" || typeof it.object !== "number") {
+   return null
+  }
+  try {
+   var ro = objectManager.getObject("ride", it.object)
+   if (!ro || !RR.specialCases || !RR.specialCases.classifyRideObject) {
+    return null
+   }
+   return RR.specialCases.classifyRideObject(ro)
+  } catch (_) {
+   return null
+  }
+ }
+
+ // Remove all items of a given essential key from both lists.
+ // Returns new lists and an array of removed entries.
+ function _partitionByKey(cur, res, key) {
+  var newCur = []
+  var newRes = []
+  var removed = []
+  var i, it, k
+
+  for (i = 0; i < cur.length; i++) {
+   it = cur[i]
+   k = _classifyItem(it)
+   if (k === key) {
+    removed.push(it)
+   } else {
+    newCur.push(it)
+   }
+  }
+
+  for (i = 0; i < res.length; i++) {
+   it = res[i]
+   k = _classifyItem(it)
+   if (k === key) {
+    removed.push(it)
+   } else {
+    newRes.push(it)
+   }
+  }
+
+  return {
+   cur: newCur,
+   res: newRes,
+   removed: removed,
+  }
+ }
+
+ // Build a new ResearchItem entry for a given essential key, if possible.
+ function _buildEntryForKey(key) {
+  if (typeof objectManager === "undefined" || !objectManager || !objectManager.getAllObjects) {
+   return null
+  }
+  try {
+   var rides = objectManager.getAllObjects("ride") || []
+   var i, ro, k, idx, rt
+   for (i = 0; i < rides.length; i++) {
+    ro = rides[i]
+    if (!ro || !RR.specialCases || !RR.specialCases.classifyRideObject) {
+     continue
+    }
+    k = RR.specialCases.classifyRideObject(ro)
+    if (k !== key) {
+     continue
+    }
+    idx = ro.index
+    rt = ro.rideType && ro.rideType.length ? ro.rideType[0] : -1
+    if (typeof idx !== "number" || typeof rt !== "number" || rt < 0) {
+     continue
+    }
+    return {
+     type: "ride",
+     object: idx,
+     rideType: rt,
+    }
+   }
+  } catch (_) {}
+  return null
+ }
+
+ // Prefer an already-present item if any were removed; otherwise build a new one.
+ function _pickOrBuild(key, removed) {
+  if (removed && removed.length > 0) {
+   return removed[0]
+  }
+  return _buildEntryForKey(key)
+ }
+
+ // Apply all modes to the given lists and return new lists.
+ // rng: function(n) -> [0, n) ; optional, used only for random insertion in research list.
+ function applyModes(cur, res, rng) {
+  cur = cur || []
+  res = res || []
+
+  var localRng = rng
+  if (typeof localRng !== "function") {
+   localRng = function (n) {
+    return n > 0 ? Math.floor(Math.random() * n) : 0
+   }
+  }
+
+  for (var iKey = 0; iKey < KEYS.length; iKey++) {
+   var key = KEYS[iKey]
+   var mode = RR.helper && RR.helper.getEssentialModeForKey ? RR.helper.getEssentialModeForKey(key) : "researchable"
+
+   if (mode === "ignore") {
+    // Do not move or force-add anything; these behave as normal items.
+    continue
+   }
+
+   var part = _partitionByKey(cur, res, key)
+   cur = part.cur
+   res = part.res
+
+   var entry = _pickOrBuild(key, part.removed)
+   if (!entry) {
+    // No matching object in this park's object set; nothing to enforce.
+    continue
+   }
+
+   if (mode === "start") {
+    // Ensure we start with this essential in the CURRENT list.
+    cur.push(entry)
+   } else if (mode === "researchable") {
+    // Ensure this essential lives in the RESEARCH list at a random position.
+    var pos = res.length ? localRng(res.length + 1) : 0
+    if (pos < 0 || pos > res.length) {
+     pos = res.length
+    }
+    res.splice(pos, 0, entry)
+   }
+  }
+
+  return {
+   cur: cur,
+   res: res,
+  }
+ }
+
+ return {
+  applyModes: applyModes,
+ }
+})()
+/* ============= End of RR.essential.core ============= */
+
+/** ==================================================
+ * Module: RR.unload.plan
+ * Purpose: Build unload plans based on park usage and final research lists.
+ * Exports: RR.unloadPlan
+ * Imports: RR.helper, RR.specialCases, RR.log
+ * Version: 3.0.0-alpha.4   Since: 2025-11-15
+ * =================================================== */
+var RR = RR || {}
+RR.unloadPlan = (function () {
+ function _markUsedFromResearch(cur, res, usedRideIdx, usedGroupIdx) {
+  usedRideIdx = usedRideIdx || {}
+  usedGroupIdx = usedGroupIdx || {}
+  var i
+  var it
+
+  if (cur) {
+   for (i = 0; i < cur.length; i++) {
+    it = cur[i]
+    if (!it) {
+     continue
+    }
+    if (it.type === "ride" && typeof it.object === "number") {
+     usedRideIdx[it.object] = true
+    } else if (it.type === "scenery" && typeof it.object === "number") {
+     usedGroupIdx[it.object] = true
+    }
+   }
+  }
+  if (res) {
+   for (i = 0; i < res.length; i++) {
+    it = res[i]
+    if (!it) {
+     continue
+    }
+    if (it.type === "ride" && typeof it.object === "number") {
+     usedRideIdx[it.object] = true
+    } else if (it.type === "scenery" && typeof it.object === "number") {
+     usedGroupIdx[it.object] = true
+    }
+   }
+  }
+
+  return {
+   usedRideIdx: usedRideIdx,
+   usedGroupIdx: usedGroupIdx,
+  }
+ }
+
+ // Optional usage snapshot:
+ //   usage = { usedRideIdx: {idx: true}, usedGroupIdx: {idx: true} }
+ // When provided, we reuse it; otherwise we scan via RR.helper.
+ function planForResearch(finalCur, finalRes, label, usage) {
+  label = label || "[Unload]"
+
+  if (RR.specialCases && RR.specialCases.resetSeen) {
+   RR.specialCases.resetSeen()
+  }
+
+  if (typeof objectManager === "undefined" || !objectManager) {
+   RR.log.warn(label + " objectManager unavailable.")
+   return {
+    ids: [],
+    stats: {
+     totalLoaded: 0,
+     totalLoadedRides: 0,
+     totalLoadedGroups: 0,
+     skipInUse: 0,
+     skipSpecial: 0,
+     plannedUnload: 0,
+    },
+   }
+  }
+
+  var usedRideIdxMap
+  var usedGroupIdxMap
+
+  if (usage && usage.usedRideIdx && usage.usedGroupIdx) {
+   usedRideIdxMap = usage.usedRideIdx
+   usedGroupIdxMap = usage.usedGroupIdx
+  } else {
+   var usedSceneryIds = RR.helper.scanSceneryIdentifiers()
+   usedRideIdxMap = RR.helper.scanRideObjectIndices()
+   usedGroupIdxMap = RR.helper.computeSceneryGroupIndices(usedSceneryIds)
+  }
+
+  var marked = _markUsedFromResearch(finalCur, finalRes, usedRideIdxMap, usedGroupIdxMap)
+  var usedRideIdx = marked.usedRideIdx
+  var usedGroupIdx = marked.usedGroupIdx
+
+  var rides = []
+  var groups = []
+  try {
+   rides = objectManager.getAllObjects("ride") || []
+  } catch (_) {}
+  try {
+   groups = objectManager.getAllObjects("scenery_group") || []
+  } catch (_) {}
+
+  var ids = []
+  var stats = {
+   totalLoadedRides: rides.length,
+   totalLoadedGroups: groups.length,
+   totalLoaded: rides.length + groups.length,
+   skipInUse: 0,
+   skipSpecial: 0,
+   plannedUnload: 0,
+  }
+
+  var usedRideCount = 0
+  var usedGroupCount = 0
+  var k
+  for (k in usedRideIdx) {
+   if (usedRideIdx.hasOwnProperty(k) && usedRideIdx[k]) {
+    usedRideCount++
+   }
+  }
+  for (k in usedGroupIdx) {
+   if (usedGroupIdx.hasOwnProperty(k) && usedGroupIdx[k]) {
+    usedGroupCount++
+   }
+  }
+
+  RR.log.info(label + " usage snapshot: ridesInUseOrResearch=" + usedRideCount + ", sceneryGroupsInUseOrResearch=" + usedGroupCount + ".")
+
+  var i
+  var ro
+  var idx
+  var tag
+
+  for (i = 0; i < rides.length; i++) {
+   ro = rides[i]
+   if (!ro) {
+    continue
+   }
+   idx = ro.index
+   if (usedRideIdx[idx]) {
+    stats.skipInUse++
+    continue
+   }
+   tag = null
+   try {
+    tag = RR.specialCases.tagItem({ type: "ride", object: idx })
+   } catch (_) {
+    tag = null
+   }
+   if (tag === "default" || tag === "essential") {
+    stats.skipSpecial++
+    continue
+   }
+   ids.push(ro.identifier)
+  }
+
+  for (i = 0; i < groups.length; i++) {
+   var sg = groups[i]
+   if (!sg) {
+    continue
+   }
+   idx = sg.index
+   if (usedGroupIdx[idx]) {
+    stats.skipInUse++
+    continue
+   }
+   tag = null
+   try {
+    tag = RR.specialCases.tagItem({ type: "scenery", object: idx })
+   } catch (_) {
+    tag = null
+   }
+   if (tag === "default" || tag === "essential") {
+    stats.skipSpecial++
+    continue
+   }
+   ids.push(sg.identifier)
+  }
+
+  stats.plannedUnload = ids.length
+
+  RR.log.info(
+   label +
+    " plan: loadedRides=" +
+    stats.totalLoadedRides +
+    ", loadedGroups=" +
+    stats.totalLoadedGroups +
+    ", candidates=" +
+    stats.plannedUnload +
+    ", skippedInUseOrResearch=" +
+    stats.skipInUse +
+    ", skippedSpecial=" +
+    stats.skipSpecial +
+    "."
+  )
+
+  return {
+   ids: ids,
+   stats: stats,
+  }
+ }
+
+ return {
+  planForResearch: planForResearch,
+ }
+})()
+/* ============= End of RR.unload.plan ============= */
+
+/** ==================================================
+ * Module: RR.unload.core
+ * Purpose: Apply unload plans for research lists using objectManager.
+ * Exports: RR.unload
+ * Imports: RR.unloadPlan, RR.log
+ * Version: 3.0.0-alpha.3   Since: 2025-11-15
+ * =================================================== */
+var RR = RR || {}
+RR.unload = (function () {
+ function _applyPlan(plan, label) {
+  label = label || "[Unload]"
+  var ids = plan && plan.ids ? plan.ids : []
+  var stats = plan && plan.stats ? plan.stats : {}
+
+  if (!ids.length) {
+   RR.log.info(label + " Nothing to unload (all loaded objects are in-use, in-research, or special).")
+   return
+  }
+
+  var ok = 0
+  var fail = 0
+  for (var i = 0; i < ids.length; i++) {
+   try {
+    objectManager.unload(ids[i])
+    ok++
+   } catch (_) {
+    fail++
+   }
+  }
+
+  RR.log.info(label + " Applied. targets=" + ids.length + ", ok=" + ok + ", fail=" + fail + ", skippedInUseOrResearch=" + (stats.skipInUse || 0) + ", skippedSpecial=" + (stats.skipSpecial || 0) + ".")
+ }
+
+ // Optional usage snapshot is threaded through to RR.unloadPlan.planForResearch.
+ function applyForResearch(finalCur, finalRes, label, usage) {
+  try {
+   var effectiveLabel = label || "[Unload for research]"
+   var plan = RR.unloadPlan.planForResearch(finalCur, finalRes, effectiveLabel, usage)
+   _applyPlan(plan, effectiveLabel)
+  } catch (e) {
+   RR.log.warn("[Unload for research] Failed: " + (e && e.message ? e.message : String(e)))
+  }
+ }
+
+ return {
+  applyForResearch: applyForResearch,
+ }
+})()
+/* ============= End of RR.unload.core ============= */
+
+/** ==================================================
+ * Module: RR.ground.core
+ * Purpose: Track per-park ground-truth randomizable totals for stable multiplier behavior
+ * Exports: RR.ground
+ * Imports: RR.config, RR.log
+ * Version: 3.0.0-alpha.5   Since: 2025-11-15
+ * =================================================== */
+var RR = RR || {}
+RR.ground = (function () {
+ // Bump version whenever the stored ground-truth shape changes.
+ var GT_VERSION = 4
+
+ function _getParkStore() {
+  try {
+   if (typeof context !== "undefined" && context && context.getParkStorage) {
+    return context.getParkStorage(RR.config.INTERNAL_NAME)
+   }
+  } catch (_) {}
+  return null
+ }
+
+ function _loadState() {
+  var store = _getParkStore()
+  if (!store || typeof store.get !== "function") {
+   return { version: GT_VERSION, base: null }
+  }
+
+  var data
+  try {
+   data = store.get(RR.config.STORAGE.PARK_KEY, {})
+  } catch (_) {
+   data = {}
+  }
+  if (!data || typeof data !== "object") {
+   data = {}
+  }
+
+  var gt = data.groundTruth
+  if (!gt || typeof gt !== "object" || gt.version !== GT_VERSION) {
+   // Unknown / old version -> treat as empty so we can re-seed cleanly.
+   return { version: GT_VERSION, base: null }
+  }
+  return gt
+ }
+
+ function _saveState(state) {
+  var store = _getParkStore()
+  if (!store || typeof store.set !== "function") {
+   return
+  }
+
+  var data
+  try {
+   data = store.get(RR.config.STORAGE.PARK_KEY, {})
+  } catch (_) {
+   data = {}
+  }
+  if (!data || typeof data !== "object") {
+   data = {}
+  }
+
+  state.version = GT_VERSION
+  data.groundTruth = state
+  try {
+   store.set(RR.config.STORAGE.PARK_KEY, data)
+  } catch (_) {}
+ }
+
+ function _copyCounts(src) {
+  var dst = {}
+  if (!src || typeof src !== "object") {
+   return dst
+  }
+  for (var k in src) {
+   if (src.hasOwnProperty(k)) {
+    dst[k] = src[k]
+   }
+  }
+  return dst
+ }
+
+ // Sum two per-category maps into a new one, recomputing "total" from category entries.
+ function _sumCounts(a, b) {
+  var out = {}
+  var k
+
+  if (a && typeof a === "object") {
+   for (k in a) {
+    if (!a.hasOwnProperty(k) || k === "total") {
+     continue
+    }
+    var v = a[k]
+    if (typeof v === "number") {
+     out[k] = (out[k] || 0) + v
+    }
+   }
+  }
+
+  if (b && typeof b === "object") {
+   for (k in b) {
+    if (!b.hasOwnProperty(k) || k === "total") {
+     continue
+    }
+    var v2 = b[k]
+    if (typeof v2 === "number") {
+     out[k] = (out[k] || 0) + v2
+    }
+   }
+  }
+
+  var total = 0
+  for (k in out) {
+   if (!out.hasOwnProperty(k)) {
+    continue
+   }
+   if (k === "total") {
+    continue
+   }
+   var vv = out[k]
+   if (typeof vv === "number") {
+    total += vv
+   }
+  }
+  out.total = total
+  return out
+ }
+
+ // Build a canonical pool-key for options that affect the candidate pool.
+ function _poolKey(opts) {
+  opts = opts || {}
+  return "excludeCustom=" + (opts.excludeCustom ? "1" : "0")
+ }
+
+ /**
+  * Resolve ground-truth totals for the current park.
+  *
+  * Inputs:
+  *   loadCounts: per-category counts for the *candidate pool* of randomizable items
+  *               (from catalog: installed + filters, NOT current/research lists).
+  *   curCounts:  per-category counts for the *current randomizable subset*
+  *               (CURRENT list, before this randomization run).
+  *   resCounts:  per-category counts for the *research randomizable subset*
+  *               (RESEARCH list, before this randomization run).
+  *   opts:       options bag (excludeCustom).
+  *
+  * Stored baseline (per park):
+  *   base.loadCounts     — candidate pool baseline per-category
+  *   base.loadTotal      — candidate pool baseline total
+  *   base.origCounts     — original combined randomizable per-category (cur+res)
+  *   base.origTotal      — original combined randomizable total
+  *   base.origCurCounts  — original CURRENT randomizable per-category
+  *   base.origCurTotal   — original CURRENT randomizable total
+  *   base.origResCounts  — original RESEARCH randomizable per-category
+  *   base.origResTotal   — original RESEARCH randomizable total
+  *   base.excludeCustom  — flag used when baseline was recorded
+  *   base.poolKey        — canonical string for all pool-shaping options
+  *
+  * Returns:
+  *   {
+  *     loadCounts:    <candidate pool baseline counts>,
+  *     loadTotal:     <candidate pool baseline total>,
+  *     origCounts:    <combined baseline counts>,
+  *     origTotal:     <combined baseline total>,
+  *     origCurCounts: <baseline CURRENT counts>,
+  *     origCurTotal:  <baseline CURRENT total>,
+  *     origResCounts: <baseline RESEARCH counts>,
+  *     origResTotal:  <baseline RESEARCH total>
+  *   }
+  */
+ function resolve(loadCounts, curCounts, resCounts, opts) {
+  loadCounts = loadCounts || {}
+  curCounts = curCounts || {}
+  resCounts = resCounts || {}
+  opts = opts || {}
+
+  var excludeCustomFlag = !!opts.excludeCustom
+  var curPoolKey = _poolKey(opts)
+
+  var curLoadTotal = loadCounts && typeof loadCounts.total === "number" ? loadCounts.total : 0
+  var curCurTotal = curCounts && typeof curCounts.total === "number" ? curCounts.total : 0
+  var curResTotal = resCounts && typeof resCounts.total === "number" ? resCounts.total : 0
+
+  var combinedCounts = _sumCounts(curCounts, resCounts)
+  var combinedTotal = combinedCounts && typeof combinedCounts.total === "number" ? combinedCounts.total : 0
+
+  var st = _loadState()
+  var base = st.base
+
+  // Re-init whenever we have no baseline, or the pool-shaping options changed.
+  var needsInit = !base || base.poolKey !== curPoolKey
+
+  if (needsInit) {
+   // Fresh baseline (first run for this park / pool combination).
+   base = {
+    loadCounts: _copyCounts(loadCounts),
+    loadTotal: curLoadTotal,
+    origCounts: _copyCounts(combinedCounts),
+    origTotal: combinedTotal,
+    origCurCounts: _copyCounts(curCounts),
+    origCurTotal: curCurTotal,
+    origResCounts: _copyCounts(resCounts),
+    origResTotal: curResTotal,
+    excludeCustom: excludeCustomFlag,
+    poolKey: curPoolKey,
+   }
+
+   st.base = base
+   _saveState(st)
+
+   RR.log.info(
+    "[Ground] Initialized baseline totals: " +
+     "totalRandomizable=" +
+     base.loadTotal +
+     ", origRandomizable=" +
+     base.origTotal +
+     " (origCur=" +
+     base.origCurTotal +
+     ", origRes=" +
+     base.origResTotal +
+     ", excludeCustom=" +
+     (excludeCustomFlag ? 1 : 0) +
+     ', poolOpts="' +
+     curPoolKey +
+     '").'
+   )
+  } else {
+   // Keep excludeCustom in sync (it is also encoded into poolKey, but this is
+   // useful for diagnostics in case something drifts).
+   if (base.excludeCustom !== excludeCustomFlag) {
+    base.excludeCustom = excludeCustomFlag
+    st.base = base
+    _saveState(st)
+   }
+
+   // Candidate baseline: if the available candidate pool *shrinks*, clamp down.
+   if (curLoadTotal > 0 && curLoadTotal < base.loadTotal) {
+    base.loadCounts = _copyCounts(loadCounts)
+    base.loadTotal = curLoadTotal
+    base.poolKey = curPoolKey
+    base.excludeCustom = excludeCustomFlag
+    st.base = base
+    _saveState(st)
+    RR.log.info("[Ground] Adjusted baseline down to current candidate totals: totalRandomizable=" + base.loadTotal + ".")
+   }
+
+   // Combined original-randomizable baseline normally stays fixed across runs so
+   // multipliers are always relative to the first "before" snapshot, not
+   // the current (possibly inflated) lists. We only ever tighten it if it
+   // somehow drifts above the candidate pool baseline.
+   if (base.origTotal > base.loadTotal && base.loadTotal > 0) {
+    base.origTotal = base.loadTotal
+    st.base = base
+    _saveState(st)
+    RR.log.warn("[Ground] Orig combined baseline clamped to candidate pool: origRandomizable=" + base.origTotal + ", loadRandomizable=" + base.loadTotal + ".")
+   }
+
+   // Per-list baselines (origCur / origRes) are kept as recorded for this park/pool
+   // combination. They define the "shape" we want CURRENT and RESEARCH to keep over
+   // repeated runs. We intentionally do not recompute them from current lists.
+  }
+
+  return {
+   loadCounts: base.loadCounts || {},
+   loadTotal: typeof base.loadTotal === "number" ? base.loadTotal : 0,
+   origCounts: base.origCounts || {},
+   origTotal: typeof base.origTotal === "number" ? base.origTotal : 0,
+   origCurCounts: base.origCurCounts || {},
+   origCurTotal: typeof base.origCurTotal === "number" ? base.origCurTotal : 0,
+   origResCounts: base.origResCounts || {},
+   origResTotal: typeof base.origResTotal === "number" ? base.origResTotal : 0,
+  }
+ }
+
+ return {
+  resolve: resolve,
+ }
+})()
+/* ============= End of RR.ground.core ============= */
+
+/** ==================================================
+ * Module: RR.randomize.algo
+ * Purpose: Shared helper algorithms for randomization (shuffle, per-category picker).
+ * Exports: RR.randomAlgo
+ * Imports: RR.randomCore
+ * Version: 3.0.0-alpha.1   Since: 2025-11-15
+ * =================================================== */
+var RR = RR || {}
+RR.randomAlgo = (function () {
+ var ORDER = RR.randomCore && RR.randomCore.ORDER ? RR.randomCore.ORDER : ["transport", "gentle", "rollercoaster", "thrill", "water", "shop", "scenery"]
+
+ function _makeLocalRng(rng) {
+  if (typeof rng === "function") {
+   return function (n) {
+    return n > 0 ? rng(n) : 0
+   }
+  }
+  return function (n) {
+   return n > 0 ? Math.floor(Math.random() * n) : 0
+  }
+ }
+
+ // Fisher–Yates shuffle.
+ function shuffle(list, rng) {
+  if (!list || list.length <= 1) {
+   return
+  }
+  var r = _makeLocalRng(rng)
+  for (var i = list.length - 1; i > 0; i--) {
+   var j = r(i + 1)
+   var t = list[i]
+   list[i] = list[j]
+   list[j] = t
+  }
+ }
+
+ function pickForNeeds(byCat, needMap, rng, used) {
+  byCat = byCat || {}
+  needMap = needMap || {}
+  used = used || {}
+
+  var out = []
+  var r = _makeLocalRng(rng)
+  var i, cat, need, bin, k, it
+
+  for (i = 0; i < ORDER.length; i++) {
+   cat = ORDER[i]
+   need = needMap[cat] || 0
+   if (need <= 0) {
+    continue
+   }
+
+   bin = (byCat[cat] || []).slice(0)
+   if (!bin.length) {
+    continue
+   }
+
+   shuffle(bin, r)
+
+   for (k = 0; k < bin.length && need > 0; k++) {
+    it = bin[k]
+    if (!it || !it.identifier) {
+     continue
+    }
+    if (used[it.identifier]) {
+     continue
+    }
+    used[it.identifier] = true
+    out.push(it)
+    need--
+   }
+
+   // Update remaining need (for diagnostics, if desired).
+   needMap[cat] = need
+
+   // Prune used identifiers out of the global bin for this category.
+   var orig = byCat[cat] || []
+   var kept = []
+   for (k = 0; k < orig.length; k++) {
+    var cand = orig[k]
+    if (!cand || !cand.identifier) {
+     continue
+    }
+    if (!used[cand.identifier]) {
+     kept.push(cand)
+    }
+   }
+   byCat[cat] = kept
+  }
+
+  return out
+ }
+
+ return {
+  shuffle: shuffle,
+  pickForNeeds: pickForNeeds,
+ }
+})()
+/* ============= End of RR.randomize.algo ============= */
+
+/** ==================================================
+ * Module: RR.randomCandidates.core
+ * Purpose: Build the randomizable candidate pool from installed objects.
+ * Exports: RR.randomCandidates
+ * Imports: RR.catalog, RR.randomSpecial, RR.helper, RR.randomCore, RR.log
+ * Version: 3.0.0-alpha.1   Since: 2025-11-15
+ * =================================================== */
+var RR = RR || {}
+RR.randomCandidates = (function () {
+ var ORDER = RR.randomCore && RR.randomCore.ORDER ? RR.randomCore.ORDER : ["transport", "gentle", "rollercoaster", "thrill", "water", "shop", "scenery"]
+
+ // Map catalog identities to ResearchItem-like entries with identifiers.
+ function _buildMasterItems(master) {
+  var caches = RR.helper && RR.helper.getIndexCaches ? RR.helper.getIndexCaches() : null
+  var rideIdxById = caches && caches.rideIndexById ? caches.rideIndexById : {}
+  var groupIdxById = caches && caches.groupIndexById ? caches.groupIndexById : {}
+
+  var items = []
+  if (!master || !master.length) {
+   return items
+  }
+
+  for (var i = 0; i < master.length; i++) {
+   var id = master[i]
+   if (!id || !id.identifier) {
+    continue
+   }
+
+   if (id.type === "ride") {
+    var rIdx = rideIdxById[id.identifier]
+    if (typeof rIdx === "number") {
+     var ro = null
+     var rt = null
+     try {
+      ro = objectManager.getObject("ride", rIdx)
+      rt = ro && ro.rideType && ro.rideType.length ? ro.rideType[0] : null
+     } catch (_) {
+      rt = null
+     }
+     items.push({
+      type: "ride",
+      object: rIdx,
+      rideType: typeof rt === "number" ? rt : null,
+      identifier: id.identifier,
+     })
+    }
+   } else {
+    var gIdx = groupIdxById[id.identifier]
+    if (typeof gIdx === "number") {
+     items.push({
+      type: "scenery",
+      object: gIdx,
+      identifier: id.identifier,
+     })
+    }
+   }
+  }
+
+  return items
+ }
+
+ function build(usage, verbose) {
+  var master = RR.catalog.buildMaster()
+
+  var allItems = _buildMasterItems(master)
+  var split = RR.randomSpecial.splitBySpecial(allItems, usage)
+  var randItems = split && split.rand ? split.rand : []
+
+  // Bucket randomizable items by category for planner + selectors.
+  var byCatItems = {}
+  var byCatIdents = {}
+  var candCounts = RR.randomCore.zeros()
+
+  var i
+  for (i = 0; i < ORDER.length; i++) {
+   byCatItems[ORDER[i]] = []
+   byCatIdents[ORDER[i]] = []
+  }
+
+  for (i = 0; i < randItems.length; i++) {
+   var it = randItems[i]
+   if (!it || !it.identifier) {
+    continue
+   }
+
+   var cat = RR.helper.categoryFromItem(it)
+   if (!byCatItems[cat]) {
+    byCatItems[cat] = []
+    byCatIdents[cat] = []
+   }
+
+   byCatItems[cat].push(it)
+   var ident = {
+    type: it.type === "ride" ? "ride" : "scenery",
+    identifier: it.identifier,
+   }
+   byCatIdents[cat].push(ident)
+
+   candCounts[cat] = (candCounts[cat] || 0) + 1
+   candCounts.total++
+  }
+
+  if (verbose) {
+   RR.log.info("[Randomize] catalog candidates (randomizable): total=" + candCounts.total + " (from master=" + master.length + ", special/kept=" + (split && split.keep ? split.keep.length : 0) + ").")
+  }
+
+  return {
+   master: master,
+   items: randItems,
+   byCatItems: byCatItems,
+   byCatIdents: byCatIdents,
+   candCounts: candCounts,
+  }
+ }
+
+ return {
+  build: build,
+ }
+})()
+/* ============= End of RR.randomCandidates.core ============= */
+
+/** ==================================================
+ * Module: RR.randomPlan.core
+ * Purpose: Compute per-category targets for CURRENT / RESEARCH / LOADED.
+ * Exports: RR.randomPlan
+ * Imports: RR.randomCore, RR.ground, RR.log
+ * Version: 3.0.0-alpha.3   Since: 2025-11-15
+ * =================================================== */
+var RR = RR || {}
+RR.randomPlan = (function () {
+ var ORDER = RR.randomCore && RR.randomCore.ORDER ? RR.randomCore.ORDER : ["transport", "gentle", "rollercoaster", "thrill", "water", "shop", "scenery"]
+
+ function _zeros() {
+  return RR.randomCore.zeros()
+ }
+
+ // Build combined (randomizable) counts from CURRENT + RESEARCH.
+ function _buildRandCounts(curCounts, resCounts) {
+  var out = _zeros()
+  curCounts = curCounts || _zeros()
+  resCounts = resCounts || _zeros()
+
+  for (var i = 0; i < ORDER.length; i++) {
+   var c = ORDER[i]
+   var cv = curCounts[c] || 0
+   var rv = resCounts[c] || 0
+   var sum = cv + rv
+   out[c] = sum
+   out.total += sum
+  }
+  return out
+ }
+
+ // Copy map into a fresh zeros() structure.
+ function _copyCounts(src) {
+  var dst = _zeros()
+  if (!src) {
+   return dst
+  }
+  for (var i = 0; i < ORDER.length; i++) {
+   var c = ORDER[i]
+   if (src.hasOwnProperty(c)) {
+    dst[c] = src[c] || 0
+    dst.total += dst[c]
+   }
+  }
+  return dst
+ }
+
+ // Ensure baseline categories (non-zero in baseOrigCats AND available in candCounts)
+ // remain present in the LOADED targets whenever the total budget allows it.
+ function _ensureBaselineCategoriesPresentForLoad(target, baseOrigCats, totalBudget, candCounts) {
+  if (!target) {
+   return
+  }
+
+  var baselineCats = []
+  var i, cat, baseVal, candVal
+  for (i = 0; i < ORDER.length; i++) {
+   cat = ORDER[i]
+   baseVal = baseOrigCats && baseOrigCats[cat] ? baseOrigCats[cat] : 0
+   candVal = candCounts && candCounts[cat] ? candCounts[cat] : 0
+   if (baseVal > 0 && candVal > 0) {
+    baselineCats.push(cat)
+   }
+  }
+
+  if (!baselineCats.length) {
+   return
+  }
+
+  if (totalBudget < baselineCats.length) {
+   // Not enough total slots to guarantee at least one per baseline category.
+   return
+  }
+
+  var need = []
+  var donors = []
+
+  for (i = 0; i < baselineCats.length; i++) {
+   cat = baselineCats[i]
+   var v = target[cat] || 0
+   if (v === 0) {
+    need.push(cat)
+   } else if (v > 1) {
+    donors.push(cat)
+   }
+  }
+
+  if (!need.length || !donors.length) {
+   return
+  }
+
+  var donorIndex = 0
+  var j, needCat, donorCat
+
+  for (j = 0; j < need.length; j++) {
+   needCat = need[j]
+
+   // Find next donor with >1 left.
+   while (donorIndex < donors.length) {
+    donorCat = donors[donorIndex]
+    var dv = target[donorCat] || 0
+    if (dv > 1) {
+     break
+    }
+    donorIndex++
+   }
+   if (donorIndex >= donors.length) {
+    break
+   }
+
+   donorCat = donors[donorIndex]
+   target[donorCat] = (target[donorCat] || 0) - 1
+   target[needCat] = (target[needCat] || 0) + 1
+  }
+
+  var sum = 0
+  for (i = 0; i < ORDER.length; i++) {
+   cat = ORDER[i]
+   sum += target[cat] || 0
+  }
+  target.total = sum
+ }
+
+ // Ensure baseline CURRENT categories (non-zero in baseOrigCurCats AND available in candCounts)
+ // remain present in the CURRENT targets, without violating Load >= Current per category.
+ //
+ // This uses the *original CURRENT* randomizable subset as the baseline, so categories
+ // that only existed in RESEARCH do not get forced into CURRENT just to satisfy "loaded".
+ function _ensureBaselineCategoriesPresentInCurrent(curTarget, loadTarget, baseOrigCurCats, curBudget, candCounts) {
+  if (!curTarget || !loadTarget) {
+   return
+  }
+
+  var baselineCats = []
+  var i, cat, baseVal, candVal
+  for (i = 0; i < ORDER.length; i++) {
+   cat = ORDER[i]
+   baseVal = baseOrigCurCats && baseOrigCurCats[cat] ? baseOrigCurCats[cat] : 0
+   candVal = candCounts && candCounts[cat] ? candCounts[cat] : 0
+   if (baseVal > 0 && candVal > 0) {
+    baselineCats.push(cat)
+   }
+  }
+
+  if (!baselineCats.length) {
+   return
+  }
+
+  if (curBudget < baselineCats.length) {
+   // Not enough CURRENT slots to keep every baseline category represented.
+   return
+  }
+
+  var needCats = []
+  for (i = 0; i < baselineCats.length; i++) {
+   cat = baselineCats[i]
+   var curVal = curTarget[cat] || 0
+   var loadVal = loadTarget[cat] || 0
+   if (curVal === 0 && loadVal > 0) {
+    needCats.push(cat)
+   }
+  }
+
+  if (!needCats.length) {
+   return
+  }
+
+  // Donor categories: have >1 in CURRENT and still have some RESEARCH room
+  // (i.e., curTarget < loadTarget).
+  var donors = []
+  for (i = 0; i < ORDER.length; i++) {
+   cat = ORDER[i]
+   var cVal = curTarget[cat] || 0
+   var lVal = loadTarget[cat] || 0
+   if (cVal > 1 && cVal < lVal) {
+    donors.push(cat)
+   }
+  }
+
+  if (!donors.length) {
+   return
+  }
+
+  var donorIndex = 0
+  var j, needCat, donorCat
+
+  for (j = 0; j < needCats.length; j++) {
+   needCat = needCats[j]
+
+   // Find next donor that still satisfies cVal > 1 && cVal < lVal.
+   while (donorIndex < donors.length) {
+    donorCat = donors[donorIndex]
+    var curVal2 = curTarget[donorCat] || 0
+    var loadVal2 = loadTarget[donorCat] || 0
+    if (curVal2 > 1 && curVal2 < loadVal2) {
+     break
+    }
+    donorIndex++
+   }
+   if (donorIndex >= donors.length) {
+    break
+   }
+
+   donorCat = donors[donorIndex]
+   curTarget[donorCat] = (curTarget[donorCat] || 0) - 1
+   curTarget[needCat] = (curTarget[needCat] || 0) + 1
+  }
+
+  var sum = 0
+  for (i = 0; i < ORDER.length; i++) {
+   cat = ORDER[i]
+   sum += curTarget[cat] || 0
+  }
+  curTarget.total = sum
+ }
+
+ function plan(curCounts, resCounts, candCounts, opts) {
+  opts = opts || {}
+  curCounts = curCounts || _zeros()
+  resCounts = resCounts || _zeros()
+  candCounts = candCounts || _zeros()
+
+  var curTotalRand = typeof curCounts.total === "number" ? curCounts.total : 0
+  var resTotalRand = typeof resCounts.total === "number" ? resCounts.total : 0
+
+  var randCounts = _buildRandCounts(curCounts, resCounts)
+
+  var baseLoadCats = candCounts
+  var baseTotal = typeof baseLoadCats.total === "number" ? baseLoadCats.total : 0
+  var baseOrigCats = randCounts
+  var baseOrigTotal = typeof randCounts.total === "number" ? randCounts.total : 0
+
+  // Per-list baselines: CURRENT and RESEARCH.
+  var baseOrigCurCats = curCounts
+  var baseOrigCurTotal = curTotalRand
+  var baseOrigResCats = resCounts
+  var baseOrigResTotal = resTotalRand
+
+  // Category mode: "preserve" | "even"
+  var categoryMode = typeof opts.categoryMode === "string" ? opts.categoryMode : null
+  if (categoryMode !== "preserve" && categoryMode !== "even") {
+   categoryMode = opts.preserveCategoryRatio ? "preserve" : "even"
+  }
+
+  // Ground-truth anchoring.
+  var poolOpts = {
+   excludeCustom: !!opts.excludeCustom,
+  }
+  var gt = RR.ground.resolve(baseLoadCats, curCounts, resCounts, poolOpts)
+  if (gt) {
+   if (gt.loadCounts && typeof gt.loadTotal === "number") {
+    baseLoadCats = gt.loadCounts
+    baseTotal = gt.loadTotal
+   }
+   if (gt.origCounts && typeof gt.origTotal === "number") {
+    baseOrigCats = gt.origCounts
+    baseOrigTotal = gt.origTotal
+   }
+   if (gt.origCurCounts && typeof gt.origCurTotal === "number") {
+    baseOrigCurCats = gt.origCurCounts
+    baseOrigCurTotal = gt.origCurTotal
+   }
+   if (gt.origResCounts && typeof gt.origResTotal === "number") {
+    baseOrigResCats = gt.origResCounts
+    baseOrigResTotal = gt.origResTotal
+   }
+  }
+
+  // Multiplier: scales the *original* randomizable total across categories.
+  var mult = typeof opts.researchMultiplier === "number" && opts.researchMultiplier > 0 ? opts.researchMultiplier : 1.0
+
+  // Original total randomizable items we want to work from (combined).
+  var origTotalRand = baseOrigTotal > 0 ? baseOrigTotal : randCounts.total
+
+  // Target total randomizable items we want AFTER (current + research).
+  var targetLoaded = Math.round(origTotalRand * mult)
+
+  // Clamp by candidate baseline and by current-randomizable floor (global).
+  if (baseTotal > 0 && targetLoaded > baseTotal) {
+   targetLoaded = baseTotal
+  }
+  if (targetLoaded < curTotalRand) {
+   targetLoaded = curTotalRand
+  }
+
+  var targetCurCats
+  var targetLoadCats
+
+  if (categoryMode === "preserve") {
+   // -------- Preserve mode --------
+
+   // LOADED (Cur+Res) targets:
+   if (baseOrigTotal > 0 && targetLoaded === baseOrigTotal) {
+    // Exact 1.0x baseline: copy original combined per-category counts verbatim.
+    targetLoadCats = _copyCounts(baseOrigCats)
+    targetLoadCats.total = baseOrigTotal
+   } else {
+    // Scale from combined baseline using weights, then ensure combined baseline
+    // categories remain present.
+    var wLoad = RR.randomCore.weightsFrom(null, baseOrigCats, baseLoadCats)
+    var rawAdds = RR.randomCore.apportion(targetLoaded, wLoad)
+    targetLoadCats = _zeros()
+    var iL
+    for (iL = 0; iL < ORDER.length; iL++) {
+     var cL = ORDER[iL]
+     var vL = rawAdds[cL] || 0
+     targetLoadCats[cL] = vL
+     targetLoadCats.total += vL
+    }
+    _ensureBaselineCategoriesPresentForLoad(targetLoadCats, baseOrigCats, targetLoaded, baseLoadCats)
+   }
+
+   // CURRENT: shape from the *original CURRENT* per-category mix when available.
+   // If original CURRENT baseline is empty, fall back to the combined/load shape.
+   var wCur
+   if (baseOrigCurTotal > 0) {
+    // Use CURRENT baseline as primary.
+    wCur = RR.randomCore.weightsFrom(baseOrigCurCats, null, null)
+   } else if (baseOrigTotal > 0) {
+    // Fallback: use combined baseline.
+    wCur = RR.randomCore.weightsFrom(null, baseOrigCats, baseLoadCats)
+   } else {
+    // Last resort: derive from candidate pool.
+    wCur = RR.randomCore.weightsFrom(null, null, baseLoadCats)
+   }
+
+   var rawCur = RR.randomCore.apportion(curTotalRand, wCur)
+   targetCurCats = _zeros()
+   var iC
+   for (iC = 0; iC < ORDER.length; iC++) {
+    var cC = ORDER[iC]
+    targetCurCats[cC] = rawCur[cC] || 0
+    targetCurCats.total += targetCurCats[cC]
+   }
+
+   // Ensure baseline CURRENT categories remain represented in CURRENT,
+   // using the original CURRENT baseline (not the combined baseline).
+   _ensureBaselineCategoriesPresentInCurrent(targetCurCats, targetLoadCats, baseOrigCurCats, curTotalRand, baseLoadCats)
+  } else {
+   // -------- Even mode --------
+   var active = RR.randomCore.activeCats(curCounts, baseLoadCats)
+   targetCurCats = RR.randomCore.evenSplit(curTotalRand, active)
+   targetLoadCats = RR.randomCore.evenSplit(targetLoaded, active)
+  }
+
+  // RESEARCH targets = Loaded - Current per category.
+  var targetResCats = _zeros()
+  for (var iR = 0; iR < ORDER.length; iR++) {
+   var cat = ORDER[iR]
+   var rCount = (targetLoadCats[cat] || 0) - (targetCurCats[cat] || 0)
+   if (rCount < 0) {
+    rCount = 0
+   }
+   targetResCats[cat] = rCount
+   targetResCats.total += rCount
+  }
+
+  return {
+   categoryMode: categoryMode,
+   preserveRatio: categoryMode === "preserve",
+   mult: mult,
+   curTotalRand: curTotalRand,
+   resTotalRand: resTotalRand,
+   targetLoaded: targetLoaded,
+   targetCurCats: targetCurCats,
+   targetResCats: targetResCats,
+   targetLoadCats: targetLoadCats,
+   baseLoadCats: baseLoadCats,
+   baseOrigCats: baseOrigCats,
+   baseOrigCurCats: baseOrigCurCats,
+   baseOrigResCats: baseOrigResCats,
+   baseTotal: baseTotal,
+   baseOrigTotal: baseOrigTotal,
+   baseOrigCurTotal: baseOrigCurTotal,
+   baseOrigResTotal: baseOrigResTotal,
+  }
+ }
+
+ return {
+  plan: plan,
+ }
+})()
+/* ============= End of RR.randomPlan.core ============= */
+
+/** ==================================================
+ * Module: RR.randomSelect.core
+ * Purpose: Select CURRENT and RESEARCH items to satisfy per-category targets.
+ * Exports: RR.randomSelect
+ * Imports: RR.randomCore, RR.randomAlgo, RR.researchBuild
+ * Version: 3.0.0-alpha.1   Since: 2025-11-15
+ * =================================================== */
+var RR = RR || {}
+RR.randomSelect = (function () {
+ var ORDER = RR.randomCore && RR.randomCore.ORDER ? RR.randomCore.ORDER : ["transport", "gentle", "rollercoaster", "thrill", "water", "shop", "scenery"]
+
+ function _makeLocalRng(rng) {
+  if (typeof rng === "function") {
+   return function (n) {
+    return n > 0 ? rng(n) : 0
+   }
+  }
+  return function (n) {
+   return n > 0 ? Math.floor(Math.random() * n) : 0
+  }
+ }
+
+ // Even-mode strict selector on item-level buckets.
+ // byCatItems: { cat -> ResearchItem[] }
+ function _selectEvenItems(byCatItems, targetCurCats, targetResCats, rng) {
+  var used = {}
+  var curItems = []
+  var resItems = []
+
+  var r = _makeLocalRng(rng)
+
+  for (var i = 0; i < ORDER.length; i++) {
+   var cat = ORDER[i]
+   var curNeed = targetCurCats[cat] || 0
+   var resNeed = targetResCats[cat] || 0
+
+   if (curNeed <= 0 && resNeed <= 0) {
+    continue
+   }
+
+   var bin = (byCatItems[cat] || []).slice(0)
+   if (!bin.length) {
+    continue
+   }
+
+   // Shuffle per-category bin.
+   try {
+    if (RR.randomAlgo && RR.randomAlgo.shuffle) {
+     RR.randomAlgo.shuffle(bin, r)
+    }
+   } catch (_) {}
+
+   for (var j = 0; j < bin.length && (curNeed > 0 || resNeed > 0); j++) {
+    var it = bin[j]
+    if (!it || !it.identifier) {
+     continue
+    }
+    if (used[it.identifier]) {
+     continue
+    }
+
+    if (curNeed > 0) {
+     curItems.push(it)
+     used[it.identifier] = true
+     curNeed--
+    } else if (resNeed > 0) {
+     resItems.push(it)
+     used[it.identifier] = true
+     resNeed--
+    }
+   }
+  }
+
+  return {
+   cur: curItems,
+   res: resItems,
+  }
+ }
+
+ function select(categoryMode, byCatItems, byCatIdents, targetCurCats, targetResCats, rng) {
+  if (categoryMode === "even") {
+   var selEven = _selectEvenItems(byCatItems || {}, targetCurCats || {}, targetResCats || {}, rng)
+   return {
+    cur: selEven.cur || [],
+    res: selEven.res || [],
+   }
+  }
+
+  // Preserve (and any future) modes use identity-level picker + researchBuild.
+  var curNeed = {}
+  var resNeed = {}
+  var i
+
+  for (i = 0; i < ORDER.length; i++) {
+   var c = ORDER[i]
+   curNeed[c] = targetCurCats && typeof targetCurCats[c] === "number" ? targetCurCats[c] : 0
+   resNeed[c] = targetResCats && typeof targetResCats[c] === "number" ? targetResCats[c] : 0
+  }
+
+  var usedMap = {}
+  var curIDs = RR.randomAlgo.pickForNeeds(byCatIdents || {}, curNeed, rng, usedMap)
+  var resIDs = RR.randomAlgo.pickForNeeds(byCatIdents || {}, resNeed, rng, usedMap)
+  var lists = RR.researchBuild.buildFromIdentities(curIDs, resIDs)
+
+  return {
+   cur: lists.cur || [],
+   res: lists.res || [],
+  }
+ }
+
+ return {
+  select: select,
+ }
+})()
+/* ============= End of RR.randomSelect.core ============= */
+
+/** ==================================================
+ * Module: RR.randomize.engine
+ * Purpose: Core randomization engine (orchestrates planning, selection, and apply).
+ * Exports: RR.randomEngine
+ * Imports: RR.log, RR.state, RR.randomCore, RR.randomSpecial,
+ *          RR.randomCandidates, RR.randomPlan, RR.randomSelect,
+ *          RR.essential, RR.unload, RR.helper, RR.randomAlgo
+ * Version: 3.0.0-alpha.12   Since: 2025-11-15
+ * =================================================== */
+var RR = RR || {}
+RR.randomEngine = (function () {
+ var ORDER = RR.randomCore && RR.randomCore.ORDER ? RR.randomCore.ORDER : ["transport", "gentle", "rollercoaster", "thrill", "water", "shop", "scenery"]
+
+ function applyOnce(rng, opts) {
+  var label = "[Randomize]"
+
+  if (!park || !park.research) {
+   RR.log.warn(label + " Research system unavailable (deferred).")
+   return
+  }
+
+  opts = opts || {}
+
+  var verbose = !!opts.verboseLogging
+
+  // Category mode: "preserve" | "even"
+  var categoryMode = typeof opts.categoryMode === "string" ? opts.categoryMode : null
+  if (categoryMode !== "preserve" && categoryMode !== "even") {
+   categoryMode = opts.preserveCategoryRatio ? "preserve" : "even"
+  }
+
+  // Single usage snapshot for this run (rides + scenery groups in use).
+  var usage = null
+  try {
+   var usedRideIdx = RR.helper && RR.helper.scanRideObjectIndices ? RR.helper.scanRideObjectIndices() : {}
+   var usedSceneryIds = RR.helper && RR.helper.scanSceneryIdentifiers ? RR.helper.scanSceneryIdentifiers() : {}
+   var usedGroupIdx = RR.helper && RR.helper.computeSceneryGroupIndices ? RR.helper.computeSceneryGroupIndices(usedSceneryIds) : {}
+   usage = {
+    usedRideIdx: usedRideIdx || {},
+    usedGroupIdx: usedGroupIdx || {},
+   }
+  } catch (_) {
+   usage = null
+  }
+
+  // Snapshot current research lists at the moment we apply randomization.
+  var curNow = (park.research.inventedItems || []).slice(0)
+  var resNow = (park.research.uninventedItems || []).slice(0)
+
+  // Split into special vs randomizable, reusing shared usage snapshot.
+  var splitCur = RR.randomSpecial.splitBySpecial(curNow, usage)
+  var splitRes = RR.randomSpecial.splitBySpecial(resNow, usage)
+
+  var keepCur = splitCur.keep
+  var keepRes = splitRes.keep
+  var randCur = splitCur.rand
+  var randRes = splitRes.rand
+
+  if (!randCur.length && !randRes.length) {
+   RR.log.info(label + " No randomizable items; leaving research lists unchanged.")
+   return
+  }
+
+  // Per-category counts for the *randomizable* subset (current + research).
+  var curCounts = RR.randomCore.tallyFromList(randCur)
+  var resCounts = RR.randomCore.tallyFromList(randRes)
+
+  // Candidate pool construction (from catalog).
+  var cand = RR.randomCandidates.build(usage, verbose)
+  var byCatItems = cand.byCatItems || {}
+  var byCatIdents = cand.byCatIdents || {}
+  var candCounts = cand.candCounts || RR.randomCore.zeros()
+
+  // Planning: compute per-category targets for Cur / Res / Load.
+  var planRes = RR.randomPlan.plan(curCounts, resCounts, candCounts, opts)
+
+  if (verbose) {
+   RR.log.info(
+    label +
+     " planning: curTotalRand=" +
+     planRes.curTotalRand +
+     ", baseTotalRand=" +
+     planRes.baseTotal +
+     ", origTotalRand=" +
+     planRes.baseOrigTotal +
+     ", mult=" +
+     planRes.mult +
+     ", targetLoadedRand=" +
+     planRes.targetLoaded
+   )
+   RR.log.info(
+    label +
+     " targets (randomizable, per-category): Cur=" +
+     JSON.stringify(planRes.targetCurCats) +
+     ", Load=" +
+     JSON.stringify(planRes.targetLoadCats) +
+     ", Res=" +
+     JSON.stringify(planRes.targetResCats)
+   )
+  }
+
+  // Selection: pick items to match the planner's targets.
+  var lists = RR.randomSelect.select(planRes.categoryMode, byCatItems, byCatIdents, planRes.targetCurCats, planRes.targetResCats, rng)
+
+  // Re-attach special/in-use items from the original research lists.
+  var finalCur = keepCur.concat(lists.cur || [])
+  var finalRes = keepRes.concat(lists.res || [])
+
+  // Apply essential-item modes (Ignore / Researchable / Start with).
+  try {
+   if (RR.essential && typeof RR.essential.applyModes === "function") {
+    var adjusted = RR.essential.applyModes(finalCur, finalRes, rng)
+    if (adjusted && adjusted.cur && adjusted.res) {
+     finalCur = adjusted.cur
+     finalRes = adjusted.res
+    }
+   }
+  } catch (eEss) {
+   RR.log.warn(label + " essential mode application failed: " + (eEss && eEss.message ? eEss.message : String(eEss)))
+  }
+
+  // FINAL SHUFFLE OF RESEARCH LIST:
+  // Order matters in the research list, so shuffle to avoid big clumps.
+  try {
+   RR.randomAlgo.shuffle(finalRes, rng)
+  } catch (eShuf) {
+   RR.log.warn("[Randomize] final research shuffle failed: " + (eShuf && eShuf.message ? eShuf.message : String(eShuf)))
+  }
+
+  // Write new research state.
+  park.research.inventedItems = finalCur
+  park.research.uninventedItems = finalRes
+
+  // Tighten loaded objects to match the new research lists (plus park usage and special cases),
+  // reusing the same usage snapshot so no extra scans.
+  RR.unload.applyForResearch(finalCur, finalRes, "[Randomize unload]", usage)
+
+  var toastMode = planRes.categoryMode === "even" ? "Even item distribution" : "Preserve category ratio"
+  RR.log.toast("Research randomized (mode=" + toastMode + ", mult=" + planRes.mult + ")")
+ }
+
+ return {
+  applyOnce: applyOnce,
+ }
+})()
+/* ============= End of RR.randomize.engine ============= */
+
+/** ==================================================
+ * Module: RR.randomize.entry
+ * Purpose: Entry point for randomization (seed management, deferral, stats, warning dialog).
+ * Exports: RR.randomize
+ * Imports: RR.log, RR.state, RR.store, RR.defer, RR.stats, RR.randomCore, RR.randomEngine, RR.config
+ * Version: 3.0.0-alpha.3   Since: 2025-11-15
+ * =================================================== */
+var RR = RR || {}
+RR.randomize = (function () {
+ var _pendingStats = null
+ var _afterSub = null
+
+ function _armAfterStats() {
+  if (!context || typeof context.subscribe !== "function") {
+   RR.log.warn("[Randomize] context.subscribe unavailable; AFTER stats disabled.")
+   return
+  }
+  try {
+   if (_afterSub && _afterSub.dispose) {
+    _afterSub.dispose()
+   }
+  } catch (_) {}
+
+  _afterSub = context.subscribe("interval.day", function () {
+   try {
+    if (_pendingStats && RR.stats && RR.stats.logBeforeAfter) {
+     var curAfter = park && park.research && park.research.inventedItems ? park.research.inventedItems.slice(0) : []
+     var resAfter = park && park.research && park.research.uninventedItems ? park.research.uninventedItems.slice(0) : []
+
+     RR.stats.logBeforeAfter(_pendingStats.curBefore, curAfter, _pendingStats.resBefore, resAfter)
+    }
+   } catch (e) {
+    RR.log.warn("[Randomize] AFTER stats failed: " + (e && e.message ? e.message : String(e)))
+   }
+
+   _pendingStats = null
+   try {
+    if (_afterSub && _afterSub.dispose) {
+     _afterSub.dispose()
+    }
+   } catch (_) {}
+   _afterSub = null
+  })
+ }
+
+ // Helper: get existing warning window, if any.
+ function _getWarningWindow() {
+  if (typeof ui === "undefined" || !ui || !ui.getWindow) {
+   return null
+  }
+  try {
+   return ui.getWindow(RR.config.CLASS + ".warn")
+  } catch (_) {
+   return null
+  }
+ }
+
+ // Simple info-only warning dialog when randomization is armed.
+ // Ensures only one warning window exists at a time.
+ function _showWarningDialog() {
+  if (typeof ui === "undefined" || !ui || !ui.openWindow) {
+   return
+  }
+
+  // If a warning window already exists, just bring it to front.
+  var existing = _getWarningWindow()
+  if (existing) {
+   try {
+    if (existing.bringToFront) {
+     existing.bringToFront()
+    }
+   } catch (_) {}
+   return
+  }
+
+  ui.openWindow({
+   classification: RR.config.CLASS + ".warn",
+   width: 280,
+   height: 90,
+   title: RR.config.UI_NAME,
+   colours: RR.config.COLOURS,
+   widgets: [
+    { type: "label", x: 10, y: 20, width: 260, height: 10, text: "Randomization primed" },
+    { type: "label", x: 10, y: 34, width: 260, height: 10, text: "Advance one day to complete." },
+    { type: "label", x: 10, y: 48, width: 260, height: 10, text: "Game may freeze for several seconds." },
+   ],
+   onUpdate: function () {
+    /* no-op */
+   },
+  })
+ }
+
+ // Red warning-box style cooldown message when button is spammed.
+ function _showCooldownDialog() {
+  try {
+   if (typeof ui !== "undefined" && ui && ui.showError) {
+    ui.showError(RR.config.UI_NAME, "Randomization on cooldown for 1 day.")
+   }
+  } catch (_) {
+   // If UI is unavailable, just fail silently; no toast/ticker fallback here by design.
+  }
+ }
+
+ // Deterministic seed bump (same LCG as RR.randomCore.makeRng).
+ function _bumpSeed(oldSeed) {
+  var s = oldSeed >>> 0
+  if (!s) {
+   s = 1
+  }
+  s = (Math.imul(1664525, s) + 1013904223) >>> 0
+  if (s === 0) {
+   s = 1
+  }
+  return s
+ }
+
+ function randomize() {
+  try {
+   if (!park || !park.research) {
+    RR.log.warn("Research system unavailable.")
+    return
+   }
+
+   // Cooldown: if a pre-day randomization is already armed, ignore this press
+   // and show a red warning-box message instead of arming again.
+   if (RR.defer && typeof RR.defer.isArmed === "function" && RR.defer.isArmed()) {
+    _showCooldownDialog()
+    return
+   }
+
+   var opts = RR.state.options || {}
+   var verbose = !!opts.verboseLogging
+
+   // Auto-advance seed when enabled, so each randomize uses a new sequence.
+   if (opts.automaticallyRandomizeSeed) {
+    var newSeed = _bumpSeed(opts.seed || 1)
+    opts.seed = newSeed
+    RR.state.options.seed = newSeed
+    try {
+     RR.store.saveOptions()
+    } catch (_) {}
+   }
+
+   var rng = RR.randomCore.makeRng(opts.seed || 1)
+
+   // Capture BEFORE stats only when verbose logging is enabled.
+   if (verbose) {
+    var curBefore = (park.research.inventedItems || []).slice(0)
+    var resBefore = (park.research.uninventedItems || []).slice(0)
+    _pendingStats = { curBefore: curBefore, resBefore: resBefore }
+    _armAfterStats()
+   } else {
+    _pendingStats = null
+   }
+
+   // Defer the heavy work to the pre-day window.
+   var armed = RR.defer.armPreDayOnce(
+    "[Randomize]",
+    function () {
+     try {
+      RR.randomEngine.applyOnce(rng, opts)
+     } catch (e) {
+      RR.log.error("[Randomize] deferred apply failed: " + (e && e.message ? e.message : String(e)))
+     }
+    },
+    16
+   )
+
+   if (armed && !opts.disableWarning) {
+    _showWarningDialog()
+   }
+  } catch (e) {
+   RR.log.error("Randomize failed: " + (e && e.message ? e.message : String(e)))
+  }
+ }
+
+ return {
+  randomize: randomize,
+ }
+})()
+/* ============= End of RR.randomize.entry ============= */
+
+/** ==================================================
+ * Module: RR.ui.mainWindow
+ * Purpose: Two-tab window (Options / Dev); Randomize uses deferred pre-day pulse.
+ * Exports: RR.uiMain.open
+ * Imports: RR.config, RR.state, RR.store, RR.log, RR.randomize
+ * Version: 3.0.0-alpha.7   Since: 2025-11-15
+ * =================================================== */
+var RR = RR || {}
+RR.uiMain = (function () {
+ var CONTENT_TOP = 50,
+  LINE_H = 14,
+  V_PAD = 4,
+  STEP = LINE_H + V_PAD,
+  PAD_BOTTOM = 12
+ var H_CHECK = 14,
+  H_TEXT = 14,
+  H_DD = 14,
+  H_BTN = 16,
+  W_BTN = 230,
+  WIN_W = 360,
+  MARGIN = 10
+
+ var MULT_LABELS = ["1.0x", "1.5x", "2.0x", "3.0x"],
+  MULT_VALUES = [1.0, 1.5, 2.0, 3.0]
+
+ var ESS_MODE_LABELS = ["Ignore", "Researchable", "Start with"],
+  ESS_MODE_VALUES = ["ignore", "researchable", "start"]
+
+ var CAT_MODE_LABELS = ["Preserve category ratio", "Even item distribution"],
+  CAT_MODE_VALUES = ["preserve", "even"]
+
+ function _persist() {
+  RR.store.saveOptions()
+ }
+
+ function _refresh(win) {
+  if (!win) {
+   return
+  }
+  var o = RR.state.options
+
+  function set(n, p, v) {
+   try {
+    var w = win.findWidget(n)
+    if (w) {
+     w[p] = v
+    }
+   } catch (_) {}
+  }
+
+  function modeIndex(val) {
+   var i
+   for (i = 0; i < ESS_MODE_VALUES.length; i++) {
+    if (ESS_MODE_VALUES[i] === val) {
+     return i
+    }
+   }
+   // Default to "Researchable"
+   return 1
+  }
+
+  function catModeIndex(val) {
+   var mode = val
+   if (mode !== "preserve" && mode !== "even") {
+    // Fallback to legacy flag if present.
+    mode = o.preserveCategoryRatio ? "preserve" : "even"
+   }
+   var i
+   for (i = 0; i < CAT_MODE_VALUES.length; i++) {
+    if (CAT_MODE_VALUES[i] === mode) {
+     return i
+    }
+   }
+   return 0
+  }
+
+  set("chk_exCustom", "isChecked", o.excludeCustom)
+  ;(function () {
+   var idx = catModeIndex(o.categoryMode)
+   set("dd_catMode", "selectedIndex", idx)
+  })()
+
+  set("chk_disableWarning", "isChecked", o.disableWarning)
+  set("chk_autoSeed", "isChecked", o.automaticallyRandomizeSeed)
+  ;(function () {
+   var idx = 0
+   for (var i = 0; i < MULT_VALUES.length; i++) {
+    if (Math.abs(MULT_VALUES[i] - o.researchMultiplier) < 0.001) {
+     idx = i
+     break
+    }
+   }
+   set("dd_mult", "selectedIndex", idx)
+  })()
+
+  set("dd_infoMode", "selectedIndex", modeIndex(o.essentialInfoKioskMode))
+  set("dd_cashMode", "selectedIndex", modeIndex(o.essentialCashMachineMode))
+  set("dd_firstAidMode", "selectedIndex", modeIndex(o.essentialFirstAidMode))
+
+  set("txt_seed", "text", String(o.seed))
+  set("chk_verbose", "isChecked", o.verboseLogging)
+ }
+
+ function _openWindow(initialTabIndex) {
+  var optionsHeight = 0
+  var devHeight = 0
+  var win
+
+  function makeRow() {
+   var y = CONTENT_TOP
+   return {
+    next: function () {
+     var v = y
+     y += STEP
+     return v
+    },
+    peek: function () {
+     return y
+    },
+    height: function () {
+     return y + PAD_BOTTOM
+    },
+   }
+  }
+
+  function buildOptionsTab() {
+   var r = makeRow()
+   var widgets = [
+    { type: "label", x: 8, y: r.next(), width: WIN_W - 2 * MARGIN, height: 12, text: "Options" },
+    {
+     type: "checkbox",
+     x: MARGIN,
+     y: r.next(),
+     width: WIN_W - 2 * MARGIN,
+     height: H_CHECK,
+     name: "chk_exCustom",
+     text: "Exclude custom items",
+     isChecked: RR.state.options.excludeCustom,
+     onChange: function (v) {
+      RR.state.options.excludeCustom = v
+      _persist()
+     },
+    },
+    // Category mode dropdown
+    (function () {
+     var y = r.next()
+     return {
+      type: "label",
+      x: MARGIN,
+      y: y,
+      width: 160,
+      height: 12,
+      text: "Category mode:",
+     }
+    })(),
+    (function () {
+     var y = r.peek() - STEP
+     return {
+      type: "dropdown",
+      x: 170,
+      y: y,
+      width: 160,
+      height: H_DD,
+      name: "dd_catMode",
+      items: CAT_MODE_LABELS,
+      selectedIndex: 0,
+      onChange: function (index) {
+       if (index >= 0 && index < CAT_MODE_VALUES.length) {
+        var mode = CAT_MODE_VALUES[index]
+        RR.state.options.categoryMode = mode
+        // Keep legacy flag in sync for migration / diagnostics.
+        RR.state.options.preserveCategoryRatio = mode === "preserve"
+        _persist()
+        _refresh(win)
+       }
+      },
+     }
+    })(),
+    // Research multiplier
+    (function () {
+     var y = r.next()
+     return { type: "label", x: MARGIN, y: y, width: 160, height: 12, text: "Research multiplier:", name: "lbl_mult" }
+    })(),
+    (function () {
+     var y = r.peek() - STEP
+     return {
+      type: "dropdown",
+      x: 170,
+      y: y,
+      width: 120,
+      height: H_DD,
+      name: "dd_mult",
+      items: MULT_LABELS,
+      selectedIndex: 0,
+      onChange: function (index) {
+       if (index >= 0 && index < MULT_VALUES.length) {
+        RR.state.options.researchMultiplier = MULT_VALUES[index]
+        _persist()
+        _refresh(win)
+       }
+      },
+     }
+    })(),
+    // Essential item controls header
+    (function () {
+     var y = r.next()
+     return {
+      type: "label",
+      x: 8,
+      y: y,
+      width: WIN_W - 2 * MARGIN,
+      height: 12,
+      text: "Essential items",
+     }
+    })(),
+    // Info Kiosk
+    (function () {
+     var y = r.next()
+     return {
+      type: "label",
+      x: MARGIN,
+      y: y,
+      width: 160,
+      height: 12,
+      text: "Info Kiosk:",
+     }
+    })(),
+    (function () {
+     var y = r.peek() - STEP
+     return {
+      type: "dropdown",
+      x: 170,
+      y: y,
+      width: 160,
+      height: H_DD,
+      name: "dd_infoMode",
+      items: ESS_MODE_LABELS,
+      selectedIndex: 1, // default "Researchable"
+      onChange: function (index) {
+       if (index >= 0 && index < ESS_MODE_VALUES.length) {
+        RR.state.options.essentialInfoKioskMode = ESS_MODE_VALUES[index]
+        _persist()
+        _refresh(win)
+       }
+      },
+     }
+    })(),
+    // Cash Machine
+    (function () {
+     var y = r.next()
+     return {
+      type: "label",
+      x: MARGIN,
+      y: y,
+      width: 160,
+      height: 12,
+      text: "Cash Machine:",
+     }
+    })(),
+    (function () {
+     var y = r.peek() - STEP
+     return {
+      type: "dropdown",
+      x: 170,
+      y: y,
+      width: 160,
+      height: H_DD,
+      name: "dd_cashMode",
+      items: ESS_MODE_LABELS,
+      selectedIndex: 1,
+      onChange: function (index) {
+       if (index >= 0 && index < ESS_MODE_VALUES.length) {
+        RR.state.options.essentialCashMachineMode = ESS_MODE_VALUES[index]
+        _persist()
+        _refresh(win)
+       }
+      },
+     }
+    })(),
+    // First Aid Room
+    (function () {
+     var y = r.next()
+     return {
+      type: "label",
+      x: MARGIN,
+      y: y,
+      width: 160,
+      height: 12,
+      text: "First Aid Room:",
+     }
+    })(),
+    (function () {
+     var y = r.peek() - STEP
+     return {
+      type: "dropdown",
+      x: 170,
+      y: y,
+      width: 160,
+      height: H_DD,
+      name: "dd_firstAidMode",
+      items: ESS_MODE_LABELS,
+      selectedIndex: 1,
+      onChange: function (index) {
+       if (index >= 0 && index < ESS_MODE_VALUES.length) {
+        RR.state.options.essentialFirstAidMode = ESS_MODE_VALUES[index]
+        _persist()
+        _refresh(win)
+       }
+      },
+     }
+    })(),
+    {
+     type: "button",
+     x: MARGIN,
+     y: r.next(),
+     width: W_BTN,
+     height: H_BTN,
+     name: "btn_randomize",
+     text: "Randomize Research",
+     onClick: function () {
+      RR.randomize.randomize()
+     },
+    },
+   ]
+   optionsHeight = Math.max(220, r.height())
+   return { image: "floppy_disk", widgets: widgets }
+  }
+
+  function buildDevTab() {
+   var r = makeRow()
+   var widgets = [
+    { type: "label", x: 8, y: r.next(), width: WIN_W - 2 * MARGIN, height: 12, text: "Dev" },
+    (function () {
+     var y = r.next()
+     return { type: "label", x: MARGIN, y: y, width: 100, height: 12, text: "Seed:" }
+    })(),
+    (function () {
+     var y = r.peek() - STEP
+     return {
+      type: "textbox",
+      x: 120,
+      y: y,
+      width: 120,
+      height: H_TEXT,
+      name: "txt_seed",
+      text: String(RR.state.options.seed),
+      maxLength: 10,
+      onChange: function (t) {
+       var n = parseInt(t, 10)
+       if (!isNaN(n)) {
+        RR.state.options.seed = n
+        _persist()
+       }
+      },
+     }
+    })(),
+    {
+     type: "checkbox",
+     x: MARGIN,
+     y: r.next(),
+     width: WIN_W - 2 * MARGIN,
+     height: H_CHECK,
+     name: "chk_autoSeed",
+     text: "Automatically randomize seed",
+     isChecked: RR.state.options.automaticallyRandomizeSeed,
+     onChange: function (v) {
+      RR.state.options.automaticallyRandomizeSeed = v
+      _persist()
+     },
+    },
+    {
+     type: "checkbox",
+     x: MARGIN,
+     y: r.next(),
+     width: WIN_W - 2 * MARGIN,
+     height: H_CHECK,
+     name: "chk_disableWarning",
+     text: "Disable randomization warning",
+     isChecked: RR.state.options.disableWarning,
+     onChange: function (v) {
+      RR.state.options.disableWarning = v
+      _persist()
+     },
+    },
+    {
+     type: "checkbox",
+     x: MARGIN,
+     y: r.next(),
+     width: WIN_W - 2 * MARGIN,
+     height: H_CHECK,
+     name: "chk_verbose",
+     text: "Verbose logging",
+     isChecked: RR.state.options.verboseLogging,
+     onChange: function (v) {
+      RR.state.options.verboseLogging = v
+      _persist()
+     },
+    },
+    {
+     type: "button",
+     x: MARGIN,
+     y: r.next(),
+     width: W_BTN,
+     height: H_BTN,
+     name: "btn_flush",
+     text: "Flush plugin memory",
+     onClick: function () {
+      RR.store.flushAll()
+      RR.state.options = JSON.parse(JSON.stringify(RR.config.DEFAULTS))
+      try {
+       if (win && win.close) {
+        win.close()
+       }
+      } catch (_) {}
+      _openWindow(1)
+      RR.log.toast("Persistent memory cleared; options and park baseline reset.")
+     },
+    },
+   ]
+   devHeight = Math.max(220, r.height())
+   return { image: "research", widgets: widgets }
+  }
+
+  var optTab = buildOptionsTab()
+  var devTab = buildDevTab()
+  var tabs = [optTab, { image: devTab.image, widgets: devTab.widgets }]
+
+  win = ui.openWindow({
+   classification: RR.config.CLASS,
+   width: WIN_W,
+   height: initialTabIndex === 1 ? devHeight : optionsHeight,
+   title: RR.config.UI_NAME + " v" + RR.config.VERSION,
+   colours: RR.config.COLOURS,
+   tabs: tabs,
+   onTabChange: function () {
+    win.height = win.tabIndex === 1 ? devHeight : optionsHeight
+    _refresh(win)
+   },
+   onUpdate: function () {
+    /* no-op */
+   },
+  })
+  if (initialTabIndex) {
+   win.tabIndex = initialTabIndex
+   win.height = devHeight
+  }
+  RR.state.ui = { window: win }
+  _refresh(win)
+  win.bringToFront()
+ }
+
+ function open(initialTabIndex) {
+  if (typeof ui === "undefined") {
+   RR.log.warn("UI unavailable (headless).")
+   return
+  }
+  _openWindow(initialTabIndex)
+ }
+
+ return { open: open }
+})()
+/* ============= End of RR.ui.mainWindow ============= */
+
+/** ==================================================
+ * Module: RR.menu.entry
+ * Purpose: Map menu + shortcut for opening the main window.
+ * Exports: RR.menu.init
+ * Imports: RR.uiMain, RR.config, RR.log
+ * Version: 3.0.0-alpha.0   Since: 2025-11-13
+ * =================================================== */
+var RR = RR || {}
+RR.menu = {
+ init: function () {
+  if (typeof ui !== "undefined" && ui && ui.registerMenuItem) {
+   ui.registerMenuItem(RR.config.UI_NAME, function () {
+    RR.uiMain.open()
+   })
+   if (ui.registerShortcut) {
+    ui.registerShortcut({
+     id: "rrv3.main.open",
+     text: "Open " + RR.config.UI_NAME,
+     bindings: ["CTRL+SHIFT+R"],
+     callback: function () {
+      RR.uiMain.open()
+     },
+    })
+   }
+   RR.log.info("Menu + shortcut registered.")
+  } else {
+   RR.log.warn("UI unavailable; menu not registered.")
+  }
+ },
+}
+/* ============= End of RR.menu.entry ============= */
+
+/** ==================================================
+ * Module: RR.kernel.boot
+ * Purpose: Entry point wiring for plugin registration and startup.
+ * Exports: RR.kernel.boot
+ * Imports: RR.menu, RR.store, RR.log
+ * Version: 3.0.0-alpha.0   Since: 2025-11-13
+ * =================================================== */
+var RR = RR || {}
+RR.kernel = {
+ boot: function () {
+  RR.log.info("Booting RR V3 (deferred-pulse + ratio/even).")
+  RR.store.loadOptions()
+  RR.menu.init()
+ },
+}
+/* ============= End of RR.kernel.boot ============= */
+
+/** ==================================================
+ * Module: RR.meta.register
+ * Purpose: Register plugin metadata for OpenRCT2 (remote plugin).
+ * Exports: (none)
+ * Imports: RR.kernel, RR.config
+ * Version: 3.0.0-alpha.0   Since: 2025-11-13
+ * =================================================== */
 registerPlugin({
- name: "research-randomizer",
- version: "2.0",
+ name: RR.config.INTERNAL_NAME,
+ version: RR.config.VERSION,
  authors: ["PlateGlassArmour"],
- licence: "MIT",
  type: "remote",
- targetApiVersion: 80,
- minApiVersion: 60,
- main: main,
+ licence: "MIT",
+ minApiVersion: 66,
+ targetApiVersion: typeof context !== "undefined" && context && context.apiVersion ? context.apiVersion : 66,
+ main: function () {
+  RR.kernel.boot()
+ },
 })
-/* ============================= END MODULE: RR.main ============================= */
+/* ============= End of RR.meta.register ============= */
