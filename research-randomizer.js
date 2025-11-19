@@ -3145,10 +3145,10 @@ RR.randomPlan = (function () {
 
 /** ==================================================
  * Module: RR.randomSelect.core
- * Purpose: Select CURRENT and RESEARCH items to satisfy per-category targets.
+ * Purpose: Select CURRENT and RESEARCH items to satisfy per-category targets using UBS.
  * Exports: RR.randomSelect
- * Imports: RR.randomCore, RR.randomAlgo, RR.researchBuild
- * Version: 3.0.0-alpha.1   Since: 2025-11-15
+ * Imports: RR.randomCore, RR.randomAlgo, RR.state, RR.log
+ * Version: 3.0.0-alpha.2   Since: 2025-11-15
  * =================================================== */
 var RR = RR || {}
 RR.randomSelect = (function () {
@@ -3165,12 +3165,169 @@ RR.randomSelect = (function () {
   }
  }
 
- // Even-mode strict selector on item-level buckets.
- // byCatItems: { cat -> ResearchItem[] }
- function _selectEvenItems(byCatItems, targetCurCats, targetResCats, rng) {
+ // -------- UBS helpers (shared by all modes) --------
+
+ // Build a stable "family key" for UBS:
+ //  - rides: group by rideType where available (variant family),
+ //           otherwise fall back to identifier / object
+ //  - scenery: each group is its own family (identifier-based)
+ function _familyKeyForItem(it, fallbackIndex) {
+  if (!it) {
+   return null
+  }
+
+  if (it.type === "ride") {
+   if (typeof it.rideType === "number") {
+    return "r|" + it.rideType
+   }
+   if (it.identifier) {
+    return "ride|" + it.identifier
+   }
+   if (typeof it.object === "number") {
+    return "rideobj|" + it.object
+   }
+  } else {
+   if (it.identifier) {
+    return "s|" + it.identifier
+   }
+   if (typeof it.object === "number") {
+    return "sg|" + it.object
+   }
+  }
+
+  // Last-resort unique key so item is still selectable and deterministic.
+  return "u|" + String(fallbackIndex)
+ }
+
+ // UBS single-category picker.
+ //  - candidates: array of ResearchItem-like entries { type, object, rideType?, identifier }
+ //  - need: how many items to pick from this category
+ //  - used: global identifier map { identifier: true } shared across cats + cur/res
+ //  - r: RNG wrapper (n -> [0, n))
+ //  - familyCounts: map familyKey -> how many picks already taken for that family IN THIS CATEGORY
+ //
+ // Rule: family weight = 1 / (1 + picksSoFarForThatFamily)
+ //       items within a family are chosen uniformly at random.
+ function _pickUBSForCategory(candidates, need, used, r, familyCounts) {
+  var picks = []
+  if (!candidates || !candidates.length || need <= 0) {
+   return picks
+  }
+
+  used = used || {}
+  familyCounts = familyCounts || {}
+
+  var MAX_R = 1000000
+
+  while (need > 0) {
+   var familyStats = {}
+   var familyKeys = []
+   var i, it, id, fKey
+
+   // Build live families (those with at least one unused candidate).
+   for (i = 0; i < candidates.length; i++) {
+    it = candidates[i]
+    if (!it || !it.identifier) {
+     continue
+    }
+    id = it.identifier
+    if (used[id]) {
+     continue
+    }
+
+    fKey = _familyKeyForItem(it, i)
+    if (!fKey) {
+     continue
+    }
+
+    var fs = familyStats[fKey]
+    if (!fs) {
+     fs = { items: [] }
+     familyStats[fKey] = fs
+     familyKeys.push(fKey)
+    }
+    fs.items.push(it)
+   }
+
+   if (!familyKeys.length) {
+    // No more available candidates in this category.
+    break
+   }
+
+   // Compute per-family weights and total weight.
+   var totalWeight = 0
+   for (i = 0; i < familyKeys.length; i++) {
+    fKey = familyKeys[i]
+    var picksSoFar = familyCounts[fKey] || 0
+    var w = 1 / (1 + picksSoFar) // UBS: collectively inversely proportional to picks so far
+    familyStats[fKey].weight = w
+    totalWeight += w
+   }
+
+   if (totalWeight <= 0) {
+    break
+   }
+
+   // Draw a uniform u in [0, 1) from the deterministic RNG.
+   var rollInt = r(MAX_R)
+   var u = MAX_R > 0 ? rollInt / MAX_R : 0
+   var threshold = u * totalWeight
+
+   // Pick family by cumulative weights.
+   var cumulative = 0
+   var pickedFamilyKey = familyKeys[familyKeys.length - 1] // fallback
+   for (i = 0; i < familyKeys.length; i++) {
+    fKey = familyKeys[i]
+    cumulative += familyStats[fKey].weight
+    if (threshold < cumulative) {
+     pickedFamilyKey = fKey
+     break
+    }
+   }
+
+   var pickedFamily = familyStats[pickedFamilyKey]
+   if (!pickedFamily || !pickedFamily.items || !pickedFamily.items.length) {
+    // Shouldn't happen, but guard against it.
+    break
+   }
+
+   // Within the chosen family, pick a single item uniformly at random.
+   var famItems = pickedFamily.items
+   var idx = r(famItems.length)
+   if (idx < 0 || idx >= famItems.length) {
+    idx = 0
+   }
+   var chosen = famItems[idx]
+   if (!chosen || !chosen.identifier) {
+    // If we somehow picked a bad entry, just stop to avoid looping.
+    break
+   }
+
+   picks.push(chosen)
+   used[chosen.identifier] = true
+   familyCounts[pickedFamilyKey] = (familyCounts[pickedFamilyKey] || 0) + 1
+   need--
+  }
+
+  return picks
+ }
+
+ // UBS-driven selector for all modes (Preserve + Even):
+ //  - runs UBS independently per category ("within a category window")
+ //  - CURRENT is filled first, then RESEARCH
+ //  - items are shuffled per-category before UBS to reduce clumps
+ function _selectUBSAll(categoryMode, byCatItems, targetCurCats, targetResCats, rng) {
+  byCatItems = byCatItems || {}
+  targetCurCats = targetCurCats || {}
+  targetResCats = targetResCats || {}
+
   var used = {}
   var curItems = []
   var resItems = []
+
+  var perCatCur = {}
+  var perCatRes = {}
+  var globalFamilies = {}
 
   var r = _makeLocalRng(rng)
 
@@ -3180,40 +3337,87 @@ RR.randomSelect = (function () {
    var resNeed = targetResCats[cat] || 0
 
    if (curNeed <= 0 && resNeed <= 0) {
+    perCatCur[cat] = 0
+    perCatRes[cat] = 0
     continue
    }
 
-   var bin = (byCatItems[cat] || []).slice(0)
-   if (!bin.length) {
+   var catItemsSrc = byCatItems[cat] || []
+   if (!catItemsSrc.length) {
+    perCatCur[cat] = 0
+    perCatRes[cat] = 0
     continue
    }
 
-   // Shuffle per-category bin.
+   // Work on a local copy so we don't disturb the caller's buckets,
+   // and shuffle per-item to de-clump within the category.
+   var candidates = catItemsSrc.slice(0)
    try {
     if (RR.randomAlgo && RR.randomAlgo.shuffle) {
-     RR.randomAlgo.shuffle(bin, r)
+     RR.randomAlgo.shuffle(candidates, r)
     }
    } catch (_) {}
 
-   for (var j = 0; j < bin.length && (curNeed > 0 || resNeed > 0); j++) {
-    var it = bin[j]
-    if (!it || !it.identifier) {
-     continue
-    }
-    if (used[it.identifier]) {
-     continue
-    }
+   // UBS family counts are per-category ("category window").
+   var familyCounts = {}
 
-    if (curNeed > 0) {
-     curItems.push(it)
-     used[it.identifier] = true
-     curNeed--
-    } else if (resNeed > 0) {
-     resItems.push(it)
-     used[it.identifier] = true
-     resNeed--
+   // CURRENT picks first.
+   var curPicked = []
+   if (curNeed > 0) {
+    curPicked = _pickUBSForCategory(candidates, curNeed, used, r, familyCounts)
+    for (var j = 0; j < curPicked.length; j++) {
+     curItems.push(curPicked[j])
     }
    }
+
+   // RESEARCH picks second, sharing familyCounts (diminishing weights).
+   var resPicked = []
+   if (resNeed > 0) {
+    resPicked = _pickUBSForCategory(candidates, resNeed, used, r, familyCounts)
+    for (var k = 0; k < resPicked.length; k++) {
+     resItems.push(resPicked[k])
+    }
+   }
+
+   perCatCur[cat] = curPicked.length
+   perCatRes[cat] = resPicked.length
+
+   // Track families that actually ended up with picks, for logging.
+   for (var fk in familyCounts) {
+    if (familyCounts.hasOwnProperty(fk) && familyCounts[fk] > 0) {
+     globalFamilies[fk] = true
+    }
+   }
+  }
+
+  // Minimal UBS summary logging (one line, verbose mode only).
+  try {
+   var verbose = !!(RR.state && RR.state.options && RR.state.options.verboseLogging)
+   if (verbose && RR.log && typeof RR.log.info === "function") {
+    var famUsed = 0
+    for (var key in globalFamilies) {
+     if (globalFamilies.hasOwnProperty(key)) {
+      famUsed++
+     }
+    }
+
+    RR.log.info(
+     "[RandomSelect] UBS summary: mode=" +
+      (categoryMode || "preserve") +
+      ", curPicked=" +
+      curItems.length +
+      ", resPicked=" +
+      resItems.length +
+      ", familiesWithPicks=" +
+      famUsed +
+      ", perCatCur=" +
+      JSON.stringify(perCatCur) +
+      ", perCatRes=" +
+      JSON.stringify(perCatRes)
+    )
+   }
+  } catch (_) {
+   // Logging is non-critical; ignore any issues.
   }
 
   return {
@@ -3222,34 +3426,14 @@ RR.randomSelect = (function () {
   }
  }
 
+ // -------- Public select entry --------
+
  function select(categoryMode, byCatItems, byCatIdents, targetCurCats, targetResCats, rng) {
-  if (categoryMode === "even") {
-   var selEven = _selectEvenItems(byCatItems || {}, targetCurCats || {}, targetResCats || {}, rng)
-   return {
-    cur: selEven.cur || [],
-    res: selEven.res || [],
-   }
-  }
-
-  // Preserve (and any future) modes use identity-level picker + researchBuild.
-  var curNeed = {}
-  var resNeed = {}
-  var i
-
-  for (i = 0; i < ORDER.length; i++) {
-   var c = ORDER[i]
-   curNeed[c] = targetCurCats && typeof targetCurCats[c] === "number" ? targetCurCats[c] : 0
-   resNeed[c] = targetResCats && typeof targetResCats[c] === "number" ? targetResCats[c] : 0
-  }
-
-  var usedMap = {}
-  var curIDs = RR.randomAlgo.pickForNeeds(byCatIdents || {}, curNeed, rng, usedMap)
-  var resIDs = RR.randomAlgo.pickForNeeds(byCatIdents || {}, resNeed, rng, usedMap)
-  var lists = RR.researchBuild.buildFromIdentities(curIDs, resIDs)
-
+  var mode = categoryMode || "preserve"
+  var sel = _selectUBSAll(mode, byCatItems || {}, targetCurCats || {}, targetResCats || {}, rng)
   return {
-   cur: lists.cur || [],
-   res: lists.res || [],
+   cur: sel.cur || [],
+   res: sel.res || [],
   }
  }
 

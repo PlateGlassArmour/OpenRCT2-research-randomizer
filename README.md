@@ -39,6 +39,11 @@ V3.0
 - removed Smart Scan requirement
 - total stability and consistency overhaul. Finally stopped the filtering issue.
 
+V3.1
+
+- added weighted selection so that multiple rides of the same type are less likely to be selected
+- improved shuffling, so that clumps of items of the same type in the research list are unlikely.
+
 ## 📜 License
 
 This project is licensed under the MIT License.
